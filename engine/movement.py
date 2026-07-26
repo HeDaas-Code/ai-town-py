@@ -157,9 +157,8 @@ def blocked(game, now: float, pos: Point, player_id: Optional[str] = None) -> Op
 def blocked_with_positions(position: Point, other_positions, world_map: WorldMap) -> Optional[str]:
     if math.isnan(position.x) or math.isnan(position.y):
         raise ValueError(f"NaN position {position}")
-    if position.x < 0 or position.y < 0 or position.x >= world_map.width or position.y >= world_map.height:
-        return "out of bounds"
-    # 使用 chunk_manager 查询阻挡（支持生成式大地图）
+    # 无限世界：不再检查固定世界边界，而是让 chunk_manager 判断。
+    # 目标 chunk 未加载时 is_blocked 返回 True，避免 AI / 玩家走进未生成区域。
     if world_map.chunk_manager.is_blocked(position.x, position.y):
         return "world blocked"
     for other in other_positions:

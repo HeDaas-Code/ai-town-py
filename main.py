@@ -237,6 +237,13 @@ def run(config: AppConfig) -> None:
                         _step_move(game, viewer_id, dx, dy, now_ms)
                         last_move_at = now_ms
 
+            # ---- 按需加载/卸载 chunk ----
+            viewer = game.world.players.get(viewer_id)
+            if viewer is not None:
+                game.world_map.chunk_manager.update_loaded_chunks(
+                    viewer.position.x, viewer.position.y
+                )
+
             # ---- 绘制 ----
             renderer.draw(game, now_ms, dt, viewer_player_id=viewer_id, debug=show_debug)
 
@@ -418,6 +425,11 @@ def _run_headless(game, config: AppConfig, viewer_id: GameId) -> None:
     try:
         while time.time() < end:
             time.sleep(0.5)
+            viewer = game.world.players.get(viewer_id)
+            if viewer is not None:
+                game.world_map.chunk_manager.update_loaded_chunks(
+                    viewer.position.x, viewer.position.y
+                )
             stats = (
                 f"players={len(game.world.players)} "
                 f"agents={len(game.world.agents)} "

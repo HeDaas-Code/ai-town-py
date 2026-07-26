@@ -371,11 +371,13 @@ class Renderer:
                     vp.position.x * self.tile_dim,
                     vp.position.y * self.tile_dim,
                 )
-        # clamp 到地图边界
-        self.camera.clamp(
-            self.world_map.width * self.tile_dim,
-            self.world_map.height * self.tile_dim,
-        )
+        # 固定尺寸旧地图：限制相机不出边界；无限生成世界：不限制，
+        # 由 ChunkManager 按需加载新区块。
+        if self.world_map.map_width and self.world_map.map_height:
+            self.camera.clamp(
+                self.world_map.width * self.tile_dim,
+                self.world_map.height * self.tile_dim,
+            )
 
         # 2. 清屏
         self.screen.fill((0, 0, 0))

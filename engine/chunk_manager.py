@@ -1,39 +1,114 @@
 """ChunkManager：管理生成式地图的所有区块。
 
-Phase 1 职责：
+职责：
 - 存储已加载/已生成的 chunks
 - 从单张旧地图（gentle.json）导入为 seed chunk (0,0)
 - 提供世界坐标 -> tile 查询接口
 - 提供兼容旧代码的完整 bg_tiles / obj_tiles 视图
+- 基于玩家位置按需加载/卸载 chunk，并把修改过的 chunk 增量持久化到数据库
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from config import CHUNK_SIZE, MAP_SEED
 from .chunk import AnimatedSprite, Chunk, Portal, world_to_chunk
 
+if TYPE_CHECKING:
+    from db import Database
+
 TileLayer = List[List[int]]
+
+# 默认加载/卸载半径（以 chunk 为单位）
+DEFAULT_LOAD_RADIUS = 2
+DEFAULT_UNLOAD_RADIUS = 3
 
 
 class ChunkManager:
     """区块管理器。"""
 
-    def __init__(self, chunk_size: int = CHUNK_SIZE, seed: int = MAP_SEED):
+    def __init__(
+        self,
+        chunk_size: int = CHUNK_SIZE,
+        seed: int = MAP_SEED,
+        db: Optional["Database"] = None,
+        world_id: Optional[str] = None,
+        load_radius: int = DEFAULT_LOAD_RADIUS,
+        unload_radius: int = DEFAULT_UNLOAD_RADIUS,
+    ):
         self.chunk_size = chunk_size
         self.seed = seed
         self.chunks: Dict[Tuple[int, int], Chunk] = {}
+        self.db = db
+        self.world_id = world_id
+        self.load_radius = load_radius
+        self.unload_radius = max(unload_radius, load_radius + 1)
 
     # ---- 查询 ----
     def get_chunk(self, cx: int, cy: int) -> Optional[Chunk]:
         return self.chunks.get((cx, cy))
 
     def ensure_chunk(self, cx: int, cy: int) -> Chunk:
-        """获取 chunk，不存在则生成。"""
+        """获取 chunk，不存在则先从数据库加载，否则程序化生成。"""
         key = (cx, cy)
         if key not in self.chunks:
-            self.chunks[key] = self._generate_chunk(cx, cy)
+            loaded = self._load_chunk_from_db(cx, cy)
+            if loaded is not None:
+                self.chunks[key] = loaded
+            else:
+                self.chunks[key] = self._generate_chunk(cx, cy)
         return self.chunks[key]
+
+    def _load_chunk_from_db(self, cx: int, cy: int) -> Optional[Chunk]:
+        """从 SQLite 加载单个 chunk。"""
+        if self.db is None or self.world_id is None:
+            return None
+        row = self.db.load_chunk(self.world_id, cx, cy)
+        if row is None:
+            return None
+        return Chunk.from_dict(row["data"])
+
+    def update_loaded_chunks(self, wx: float, wy: float) -> None:
+        """根据玩家世界坐标加载附近 chunk、卸载远处 chunk。
+
+        由主循环或引擎 step 定期调用。
+        """
+        cx, cy, _, _ = world_to_chunk(wx, wy, self.chunk_size)
+
+        # 1. 加载半径内所有 chunk
+        for dx in range(-self.load_radius, self.load_radius + 1):
+            for dy in range(-self.load_radius, self.load_radius + 1):
+                self.ensure_chunk(cx + dx, cy + dy)
+
+        # 2. 卸载半径外的 chunk（保留修改过的到数据库）
+        to_unload = [
+            key
+            for key in list(self.chunks.keys())
+            if abs(key[0] - cx) > self.unload_radius
+            or abs(key[1] - cy) > self.unload_radius
+        ]
+        for key in to_unload:
+            self._unload_chunk(key[0], key[1])
+
+    def _unload_chunk(self, cx: int, cy: int) -> None:
+        """卸载单个 chunk，如有修改则持久化到数据库。"""
+        key = (cx, cy)
+        chunk = self.chunks.pop(key, None)
+        if chunk is None:
+            return
+        if chunk.modified and self.db is not None and self.world_id is not None:
+            self.db.save_chunks(
+                self.world_id,
+                [
+                    {
+                        "cx": chunk.cx,
+                        "cy": chunk.cy,
+                        "data": chunk.to_dict(),
+                        "summary": None,
+                        "modified": True,
+                    }
+                ],
+            )
 
     def is_loaded(self, cx: int, cy: int) -> bool:
         return (cx, cy) in self.chunks
@@ -155,18 +230,45 @@ class ChunkManager:
 
     # ---- 生成 ----
     def _generate_chunk(self, cx: int, cy: int) -> Chunk:
-        """Phase 1 占位生成器：生成一个空白 grass chunk。
+        """程序化生成一个新 chunk：biome -> 道路 -> 建筑/装饰。"""
+        from .generation import (
+            biome_at,
+            generate_buildings_and_decorations,
+            generate_roads_for_chunk,
+        )
+        from .generation.tiles import grass_tile
 
-        Phase 2 会替换为真正的程序化生成（噪声 + 道路 + 建筑）。
-        """
-        chunk = Chunk(cx=cx, cy=cy, size=self.chunk_size, biome="grass", generated=True)
-        # 背景：全草地（tile 1 假设为草地，具体 id 从 tileset 决定）
+        biome_name = biome_at(cx, cy, self.seed)
+        chunk = Chunk(
+            cx=cx, cy=cy, size=self.chunk_size, biome=biome_name, generated=True
+        )
+
+        # 初始化图层
         chunk.bg_tiles = [[[-1] * self.chunk_size for _ in range(self.chunk_size)]]
         chunk.obj_tiles = [[[-1] * self.chunk_size for _ in range(self.chunk_size)]]
-        # Phase 1 简单填充可行走草地背景
+
+        # 1. 填充草地背景
         for lx in range(self.chunk_size):
             for ly in range(self.chunk_size):
-                chunk.bg_tiles[0][lx][ly] = 1  # 占位草地 tile id
+                chunk.bg_tiles[0][lx][ly] = grass_tile(
+                    lx, ly, self.seed + cx * 1009 + cy * 997
+                )
+
+        # 2. 收集已加载的邻居（用于道路 portal 对齐）
+        neighbors: Dict[Tuple[int, int], Chunk] = {}
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            n = self.get_chunk(cx + dx, cy + dy)
+            if n is not None:
+                neighbors[(cx + dx, cy + dy)] = n
+
+        # 3. 生成道路网络
+        generate_roads_for_chunk(chunk, neighbors, self.seed)
+
+        # 4. 生成建筑与装饰
+        generate_buildings_and_decorations(chunk, self.seed)
+
+        # 新生成的 chunk 需要持久化（即使玩家没修改），避免重复生成不同结果
+        chunk.modified = True
         return chunk
 
     # ---- 序列化摘要（用于卸载） ----
@@ -180,9 +282,24 @@ class ChunkManager:
             "chunks": {f"{cx},{cy}": c.to_dict() for (cx, cy), c in self.chunks.items()},
         }
 
+    def attach_db(self, db: "Database", world_id: str) -> None:
+        """在从序列化恢复后重新绑定数据库。"""
+        self.db = db
+        self.world_id = world_id
+
     @classmethod
-    def from_dict(cls, d: dict) -> "ChunkManager":
-        cm = cls(chunk_size=d.get("chunkSize", CHUNK_SIZE), seed=d.get("seed", MAP_SEED))
+    def from_dict(
+        cls,
+        d: dict,
+        db: Optional["Database"] = None,
+        world_id: Optional[str] = None,
+    ) -> "ChunkManager":
+        cm = cls(
+            chunk_size=d.get("chunkSize", CHUNK_SIZE),
+            seed=d.get("seed", MAP_SEED),
+            db=db,
+            world_id=world_id,
+        )
         for key, cd in d.get("chunks", {}).items():
             cx, cy = (int(x) for x in key.split(","))
             chunk = Chunk.from_dict(cd)
@@ -191,7 +308,13 @@ class ChunkManager:
 
     # ---- 工厂方法：从旧地图数据导入 ----
     @classmethod
-    def from_legacy_data(cls, data: dict, chunk_size: int = CHUNK_SIZE) -> "ChunkManager":
+    def from_legacy_data(
+        cls,
+        data: dict,
+        chunk_size: int = CHUNK_SIZE,
+        db: Optional["Database"] = None,
+        world_id: Optional[str] = None,
+    ) -> "ChunkManager":
         """把单张旧地图 JSON（gentle.json 格式）拆分为一个或多个 seed chunks。
 
         如果旧地图尺寸大于 chunk_size，会按 chunk_size 网格切成多个 chunk；
@@ -205,7 +328,7 @@ class ChunkManager:
         num_cx = math.ceil(map_w / chunk_size)
         num_cy = math.ceil(map_h / chunk_size)
 
-        cm = cls(chunk_size=chunk_size)
+        cm = cls(chunk_size=chunk_size, db=db, world_id=world_id)
         all_sprites = [AnimatedSprite(**s) for s in data.get("animatedsprites", [])]
 
         for cx in range(num_cx):

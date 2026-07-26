@@ -29,6 +29,8 @@ def build_game(
     """按 config 装配一个完整可运行的 Game。"""
     db = db or Database(config.db_path)
     world_map = WorldMap.load(config.map_path)
+    # 绑定数据库到 chunk_manager，用于按需加载/卸载和增量保存
+    world_map.chunk_manager.attach_db(db, config.world_id)
 
     # 尝试从 SQLite 恢复地图元数据和 chunks
     # 先保留 gentle.json 中的 seed chunk，再用 saved_map 覆盖元数据，

@@ -259,6 +259,24 @@ class Database:
             for r in rows
         ]
 
+    def load_chunk(self, world_id: str, cx: int, cy: int) -> Optional[Dict[str, Any]]:
+        """加载单个 chunk 数据。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT cx, cy, data_json, summary_json, modified FROM chunks "
+                "WHERE world_id=? AND cx=? AND cy=?",
+                (world_id, cx, cy),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "cx": row["cx"],
+            "cy": row["cy"],
+            "data": json.loads(row["data_json"]),
+            "summary": json.loads(row["summary_json"]) if row["summary_json"] else None,
+            "modified": bool(row["modified"]),
+        }
+
     def clear_modified_chunks(self, world_id: str) -> None:
         """保存完成后把 modified 标记清零。"""
         with self._lock:
