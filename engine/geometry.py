@@ -42,12 +42,17 @@ def path_position(path: Path, time: float):
         if seg_start.t <= time <= seg_end.t:
             denom = seg_end.t - seg_start.t
             interp = 0.0 if denom == 0 else (time - seg_start.t) / denom
+            # 用当前段的实际运动方向作为 facing，比 seg_start.facing 更平滑
+            dx = seg_end.position.x - seg_start.position.x
+            dy = seg_end.position.y - seg_start.position.y
+            seg_dir = normalize(Vector(dx, dy))
+            facing = seg_dir if seg_dir is not None else seg_start.facing
             return {
                 "position": Point(
                     seg_start.position.x + interp * (seg_end.position.x - seg_start.position.x),
                     seg_start.position.y + interp * (seg_end.position.y - seg_start.position.y),
                 ),
-                "facing": seg_start.facing,
+                "facing": facing,
                 "velocity": distance(seg_start.position, seg_end.position) / denom if denom else 0.0,
             }
     raise ValueError("Timestamp checks not exhaustive?")

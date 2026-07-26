@@ -22,8 +22,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pygame
 
-from config import ASSETS_DIR
+from config import ASSETS_DIR, CONVERSATION_DISTANCE
 from dialogue import RoutedMessage
+from engine.types import unpack_component
 from engine.world_map import WorldMap
 
 
@@ -203,8 +204,9 @@ class Renderer:
         self._anim_sheets: Dict[str, Spritesheet] = {}
         self._load_anim_sheets()
 
-        # 静态地图缓存
-        self._static_map: Optional[pygame.Surface] = None
+        # 分层地图缓存（渲染顺序从下到上：背景 -> 建筑 -> 物品 -> 人物 -> UI）
+        self._background_layer: Optional[pygame.Surface] = None
+        self._building_layer: Optional[pygame.Surface] = None
 
         # 字体（用于对话气泡）
         self._font: Optional[pygame.font.Font] = None
@@ -247,22 +249,17 @@ class Renderer:
             self._font = pygame.font.SysFont(None, 16)
             self._small_font = pygame.font.SysFont(None, 12)
 
-    # ---- 静态地图 ----
-    def _build_static_map(self) -> pygame.Surface:
-        """把 bg / object 层一次性 blit 到大 Surface 上。
-
-        与原项目 PixiStaticMap.create 一致：
-        ``layer[x][y]`` -> tileIndex，若为 -1 跳过。
-        """
+    # ---- 分层地图 ----
+    def _build_background_layer(self) -> pygame.Surface:
+        """背景层：只包含 bg_tiles，是最底层。"""
         w = self.world_map.width * self.tile_dim
         h = self.world_map.height * self.tile_dim
         surf = pygame.Surface((w, h), pygame.SRCALPHA).convert_alpha()
-        all_layers = list(self.world_map.bg_tiles) + list(self.world_map.object_tiles)
         for x in range(self.world_map.width):
             for y in range(self.world_map.height):
                 px = x * self.tile_dim
                 py = y * self.tile_dim
-                for layer in all_layers:
+                for layer in self.world_map.bg_tiles:
                     if x >= len(layer) or y >= len(layer[x]):
                         continue
                     idx = layer[x][y]
@@ -273,10 +270,35 @@ class Renderer:
                         surf.blit(tile, (px, py))
         return surf
 
-    def _get_static_map(self) -> pygame.Surface:
-        if self._static_map is None:
-            self._static_map = self._build_static_map()
-        return self._static_map
+    def _build_building_layer(self) -> pygame.Surface:
+        """建筑层：只包含 object_tiles，覆盖在背景层之上、人物层之下。"""
+        w = self.world_map.width * self.tile_dim
+        h = self.world_map.height * self.tile_dim
+        surf = pygame.Surface((w, h), pygame.SRCALPHA).convert_alpha()
+        for x in range(self.world_map.width):
+            for y in range(self.world_map.height):
+                px = x * self.tile_dim
+                py = y * self.tile_dim
+                for layer in self.world_map.object_tiles:
+                    if x >= len(layer) or y >= len(layer[x]):
+                        continue
+                    idx = layer[x][y]
+                    if idx is None or idx < 0:
+                        continue
+                    tile = self.tileset.get(idx)
+                    if tile is not None:
+                        surf.blit(tile, (px, py))
+        return surf
+
+    def _get_background_layer(self) -> pygame.Surface:
+        if self._background_layer is None:
+            self._background_layer = self._build_background_layer()
+        return self._background_layer
+
+    def _get_building_layer(self) -> pygame.Surface:
+        if self._building_layer is None:
+            self._building_layer = self._build_building_layer()
+        return self._building_layer
 
     # ---- 气泡 ----
     def add_bubble(self, player_id: str, text: str, now_ms: int) -> None:
@@ -295,7 +317,9 @@ class Renderer:
         self.add_bubble(msg.author, msg.text, msg.timestamp)
 
     # ---- 主绘制 ----
-    def draw(self, game, now_ms: int, dt_sec: float, viewer_player_id: Optional[str] = None) -> None:
+    def draw(self, game, now_ms: int, dt_sec: float,
+             viewer_player_id: Optional[str] = None,
+             debug: bool = False) -> None:
         """主绘制入口。
 
         Parameters
@@ -308,6 +332,8 @@ class Renderer:
             上一帧到现在的秒数（用于动画推进）。
         viewer_player_id : str | None
             人类玩家 ID；若有则相机跟随它。
+        debug : bool
+            是否绘制调试层（碰撞箱、网格、鼠标坐标）。
         """
         if self.screen is None:
             return
@@ -329,37 +355,62 @@ class Renderer:
             self.world_map.height * self.tile_dim,
         )
 
+        cam_x = int(self.camera.camera_x)
+        cam_y = int(self.camera.camera_y)
+
         # 2. 清屏
         self.screen.fill((0, 0, 0))
 
-        # 3. 画静态地图（裁剪到可见区域）
-        static_map = self._get_static_map()
-        cam_x = int(self.camera.camera_x)
-        cam_y = int(self.camera.camera_y)
-        # 直接 blit 大图，pygame 会按需裁剪
-        self.screen.blit(static_map, (-cam_x, -cam_y))
+        # ---- 场景层（从下到上） ----
+        # 3. 背景层
+        bg_layer = self._get_background_layer()
+        self.screen.blit(bg_layer, (-cam_x, -cam_y))
 
-        # 4. 画背景动画精灵（campfire / waterfall 等）
-        self._draw_animated_sprites()
+        # 4. 建筑层
+        building_layer = self._get_building_layer()
+        self.screen.blit(building_layer, (-cam_x, -cam_y))
 
-        # 5. 画玩家
-        # 排序：让 y 大的（屏幕下方）后画，保证遮挡正确
-        players = sorted(game.world.players.values(),
-                         key=lambda p: p.position.y)
+        # 5. 动态实体层（人物 + 物品动画精灵）
+        # 大五层中，人物层在物品层之上；但实际需要按 y 深度交错遮挡，
+        # 所以把两者合并为一个可排序列表，按底部 y 坐标从小到大绘制。
+        # y 小的（屏幕上方）先画，y 大的（屏幕下方）后画，后画的覆盖先画的。
+        animated = self._build_animated_drawables()
+        players = list(game.world.players.values())
+
+        scene_objects: List[Tuple[float, str, Any]] = []
         for player in players:
-            self._draw_player(game, player, now_ms,
-                              is_viewer=(player.id == viewer_player_id))
+            scene_objects.append((player.position.y, "player", player))
+        for sort_y, surface, sx, sy in animated:
+            scene_objects.append((sort_y, "sprite", (surface, sx, sy)))
+        scene_objects.sort(key=lambda item: item[0])
 
-        # 6. 画对话气泡
+        for sort_y, kind, obj in scene_objects:
+            if kind == "player":
+                self._draw_player(game, obj, now_ms,
+                                  is_viewer=(obj.id == viewer_player_id))
+            else:
+                surface, sx, sy = obj
+                self._draw_animated_sprite(surface, sx, sy)
+
+        # ---- UI 层（最上层） ----
+        # 6. 对话气泡
         for player in players:
             self._draw_player_bubble(game, player, now_ms)
 
-        # 7. 画 HUD
+        # 7. HUD
         self._draw_hud(game, viewer_player_id)
 
+        # 8. 调试层（最高层，覆盖所有内容）
+        if debug:
+            self._draw_debug_overlay(game)
+
     # ---- 绘制：动画精灵 ----
-    def _draw_animated_sprites(self) -> None:
-        """画地图上的动画精灵（火焰 / 水流 / 风车等）。"""
+    def _build_animated_drawables(self) -> List[Tuple[float, pygame.Surface, float, float]]:
+        """构建动画精灵的可绘制项，返回 (sort_y, surface, screen_x, screen_y)。
+
+        不直接绘制，以便与人物按深度排序后统一绘制。
+        """
+        drawables: List[Tuple[float, pygame.Surface, float, float]] = []
         # 按 sheet 分组减少状态切换
         by_sheet: Dict[str, List] = {}
         for spr in self.world_map.animated_sprites:
@@ -382,7 +433,13 @@ class Renderer:
                 else:
                     scaled = frame
                 sx, sy = self.camera.world_to_screen(spr.x, spr.y)
-                self.screen.blit(scaled, (int(sx), int(sy)))
+                # sort_y 用 sprite 底部所在 tile 行，保证与人物按同一深度排序
+                sort_y = (spr.y + spr.h) / self.tile_dim
+                drawables.append((sort_y, scaled, sx, sy))
+        return drawables
+
+    def _draw_animated_sprite(self, surface: pygame.Surface, screen_x: float, screen_y: float) -> None:
+        self.screen.blit(surface, (int(screen_x), int(screen_y)))
 
     # ---- 绘制：单个角色 ----
     def _draw_player(self, game, player, now_ms: int, is_viewer: bool = False) -> None:
@@ -400,7 +457,8 @@ class Renderer:
             return
 
         # 动画帧：移动时按时间循环；静止时显示第一帧
-        if player.speed > 0.001:
+        # player.speed 单位是 tiles/ms（0.75 tiles/s = 0.00075 tiles/ms）
+        if player.speed * 1000.0 > 0.1:
             frame_idx = int(self._anim_clock * ANIMATION_FPS) % len(frames)
         else:
             frame_idx = 0
@@ -525,6 +583,170 @@ class Renderer:
             self.screen.blit(shadow, (5, y + 1))
             self.screen.blit(surf, (4, y))
             y += surf.get_height() + 1
+
+    # ---- 调试层 ----
+    def _draw_debug_overlay(self, game) -> None:
+        """调试层（最高层）：碰撞网格、寻路路径、对话范围、玩家碰撞箱、鼠标指针、agent 目标。"""
+        if self.screen is None:
+            return
+
+        # 1. 碰撞网格：object_tiles 中不可通过的格子
+        grid_color = (255, 0, 0, 60)
+        grid_border = (255, 0, 0, 180)
+        cell_surf = pygame.Surface((self.tile_dim, self.tile_dim), pygame.SRCALPHA)
+        cell_surf.fill(grid_color)
+
+        for x in range(self.world_map.width):
+            for y in range(self.world_map.height):
+                blocked = any(
+                    layer[x][y] != -1
+                    for layer in self.world_map.object_tiles
+                    if x < len(layer) and y < len(layer[x])
+                )
+                if not blocked:
+                    continue
+                px, py = self.camera.world_to_screen(x * self.tile_dim, y * self.tile_dim)
+                # 只画可见区域
+                if -self.tile_dim < px < self.camera.width and -self.tile_dim < py < self.camera.height:
+                    self.screen.blit(cell_surf, (int(px), int(py)))
+                    pygame.draw.rect(
+                        self.screen, grid_border,
+                        (int(px), int(py), self.tile_dim, self.tile_dim), 1
+                    )
+
+        # 2. 寻路路径与目标点（蓝色）
+        for player in game.world.players.values():
+            pf = player.pathfinding
+            if pf is None:
+                continue
+            dest = pf["destination"]
+            dest_px, dest_py = self.camera.world_to_screen(
+                dest.x * self.tile_dim, dest.y * self.tile_dim
+            )
+            dest_cx = int(dest_px + self.tile_dim / 2)
+            dest_cy = int(dest_py + self.tile_dim / 2)
+
+            # 玩家当前位置
+            cur_px, cur_py = self.camera.world_to_screen(
+                player.position.x * self.tile_dim, player.position.y * self.tile_dim
+            )
+
+            # 目标点：蓝色方框 + 圆点
+            pygame.draw.rect(
+                self.screen, (0, 0, 255),
+                (dest_px, dest_py, self.tile_dim, self.tile_dim), 2
+            )
+            pygame.draw.circle(self.screen, (0, 0, 255), (dest_cx, dest_cy), 4)
+            # 玩家到目标点的虚线
+            self._draw_dashed_line(
+                self.screen, (0, 0, 255),
+                (cur_px, cur_py), (dest_cx, dest_cy), dash_len=8
+            )
+
+            # 实际寻路路径：青色折线
+            state = pf["state"]
+            if state.kind == "moving" and state.path:
+                path_points = []
+                for packed in state.path:
+                    comp = unpack_component(packed)
+                    px, py = self.camera.world_to_screen(
+                        comp.position.x * self.tile_dim, comp.position.y * self.tile_dim
+                    )
+                    path_points.append((int(px), int(py)))
+                if len(path_points) >= 2:
+                    pygame.draw.lines(self.screen, (0, 255, 255), False, path_points, 2)
+                for px, py in path_points:
+                    pygame.draw.circle(self.screen, (0, 255, 255), (px, py), 3)
+
+        # 3. 对话范围（紫色半透明圆）
+        conv_radius = int(CONVERSATION_DISTANCE * self.tile_dim)
+        conv_surf = pygame.Surface((conv_radius * 2, conv_radius * 2), pygame.SRCALPHA)
+        pygame.draw.circle(conv_surf, (255, 0, 255, 40), (conv_radius, conv_radius), conv_radius)
+        for conversation in game.world.conversations.values():
+            for member in conversation.participants.values():
+                player = game.world.players.get(member.player_id)
+                if player is None:
+                    continue
+                cx, cy = self.camera.world_to_screen(
+                    player.position.x * self.tile_dim, player.position.y * self.tile_dim
+                )
+                self.screen.blit(conv_surf, (int(cx - conv_radius), int(cy - conv_radius)))
+                pygame.draw.circle(self.screen, (255, 0, 255), (int(cx), int(cy)), conv_radius, 1)
+
+        # 4. 玩家碰撞箱（绿色圆）
+        # movement.py 中人物间碰撞阈值 distance < 0.75 tile，半径取一半
+        radius = int(0.375 * self.tile_dim)
+        for player in game.world.players.values():
+            cx, cy = self.camera.world_to_screen(
+                player.position.x * self.tile_dim,
+                player.position.y * self.tile_dim,
+            )
+            pygame.draw.circle(self.screen, (0, 255, 0), (int(cx), int(cy)), radius, 2)
+            pygame.draw.circle(self.screen, (0, 255, 0), (int(cx), int(cy)), 2)
+
+        # 5. agent 当前操作名（橙色文字）
+        if self._small_font is not None:
+            for agent in game.world.agents.values():
+                player = game.world.players.get(agent.player_id)
+                if player is None:
+                    continue
+                label = None
+                if agent.in_progress_operation is not None:
+                    label = agent.in_progress_operation.name
+                elif player.pathfinding is not None:
+                    label = "moving"
+                elif player.activity is not None:
+                    label = player.activity.description
+                if label is not None:
+                    cx, cy = self.camera.world_to_screen(
+                        player.position.x * self.tile_dim,
+                        player.position.y * self.tile_dim,
+                    )
+                    text = f"[{label}]"
+                    surf = self._small_font.render(text, True, (255, 165, 0))
+                    shadow = self._small_font.render(text, True, (0, 0, 0))
+                    self.screen.blit(shadow, (int(cx) + 11, int(cy) - 24))
+                    self.screen.blit(surf, (int(cx) + 10, int(cy) - 25))
+
+        # 6. 鼠标 xy 指针
+        mx, my = pygame.mouse.get_pos()
+        wx = mx + self.camera.camera_x
+        wy = my + self.camera.camera_y
+        tile_x = wx / self.tile_dim
+        tile_y = wy / self.tile_dim
+
+        # 十字线
+        pygame.draw.line(self.screen, (255, 255, 0), (mx, 0), (mx, self.camera.height), 1)
+        pygame.draw.line(self.screen, (255, 255, 0), (0, my), (self.camera.width, my), 1)
+        pygame.draw.circle(self.screen, (255, 255, 0), (mx, my), 4, 1)
+
+        # 坐标文字
+        if self._small_font is not None:
+            text = f"mouse world: ({wx:.1f}, {wy:.1f})  tile: ({tile_x:.1f}, {tile_y:.1f})"
+            surf = self._small_font.render(text, True, (255, 255, 0))
+            shadow = self._small_font.render(text, True, (0, 0, 0))
+            self.screen.blit(shadow, (11, 11))
+            self.screen.blit(surf, (10, 10))
+
+    def _draw_dashed_line(self, surface: pygame.Surface, color,
+                          start: Tuple[float, float], end: Tuple[float, float],
+                          dash_len: int = 8) -> None:
+        """绘制虚线。"""
+        import math
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            return
+        steps = int(dist / dash_len)
+        for i in range(0, steps, 2):
+            t0 = i / steps
+            t1 = min(1.0, (i + 1) / steps)
+            x0 = start[0] + dx * t0
+            y0 = start[1] + dy * t0
+            x1 = start[0] + dx * t1
+            y1 = start[1] + dy * t1
+            pygame.draw.line(surface, color, (x0, y0), (x1, y1), 1)
 
     # ---- 工具 ----
     def resize(self, width: int, height: int) -> None:

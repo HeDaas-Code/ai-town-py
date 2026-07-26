@@ -238,15 +238,15 @@ def run(config: AppConfig) -> None:
                         last_move_at = now_ms
 
             # ---- 绘制 ----
-            renderer.draw(game, now_ms, dt, viewer_player_id=viewer_id)
+            renderer.draw(game, now_ms, dt, viewer_player_id=viewer_id, debug=show_debug)
 
             # ---- 文字输入框 ----
             if input_mode:
                 _draw_input_box(screen, renderer, input_text)
 
-            # ---- 调试覆盖 ----
+            # ---- 统计信息调试覆盖 ----
             if show_debug:
-                _draw_debug(screen, renderer, game, viewer_id, clock)
+                _draw_debug_stats(screen, renderer, game, viewer_id, clock)
 
             pygame.display.flip()
     finally:
@@ -383,7 +383,7 @@ def _draw_input_box(screen, renderer: Renderer, text: str) -> None:
                        screen.get_height() - bh - 16))
 
 
-def _draw_debug(screen, renderer: Renderer, game, viewer_id: GameId, clock) -> None:
+def _draw_debug_stats(screen, renderer: Renderer, game, viewer_id: GameId, clock) -> None:
     font = renderer._small_font
     if font is None:
         return
