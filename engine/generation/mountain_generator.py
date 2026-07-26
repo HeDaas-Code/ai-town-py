@@ -30,8 +30,10 @@ _PROTECTED_BG_TILES = set(ALL_ROAD_TILES + RIVER_WATER_TILES + RIVER_BANK_TILES)
 # 最小保留的山体连通块大小，过滤碎点
 _MIN_MOUNTAIN_COMPONENT_SIZE = 8
 
-# 噪声频率：越低山体斑块越大、越连贯
-_MOUNTAIN_FREQ = 0.025
+# 噪声频率：需要在 chunk 内部产生足够变化，避免整块变山。
+# 0.025 时一个 32×32 chunk 内噪声几乎不变；0.06 可在 chunk 内
+# 形成自然的山脊/山谷形状，同时跨 chunk 仍能连贯。
+_MOUNTAIN_FREQ = 0.06
 
 
 def generate_mountains(chunk: Chunk, seed: int) -> Set[Tuple[int, int]]:
@@ -53,7 +55,9 @@ def generate_mountains(chunk: Chunk, seed: int) -> Set[Tuple[int, int]]:
         return set()
 
     local_seed = seed + chunk.cx * 523 + chunk.cy * 701
-    threshold = 0.35 - base_density * 1.5
+    # 阈值与密度负相关：密度越高，阈值越低，山体面积越大。
+    # 0.50 基线确保大部分 tile 不会被标记为山体。
+    threshold = 0.50 - base_density * 3.0
 
     raw_cells: Set[Tuple[int, int]] = set()
     for lx in range(size):

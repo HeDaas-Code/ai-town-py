@@ -214,23 +214,49 @@ def _generate_extra_portals(
             coord = pos[0] if edge in ("N", "S") else pos[1]
             occupied[edge].add(int(coord))
 
-    # 保底：如果一个 portal 都没有，强制在一条空闲边上开一个，
-    # 避免出现完全孤立、没有道路的 chunk。
-    if not forced_portals and not extra:
-        for edge in deterministic_shuffle(list(EDGES), seed + chunk.cx * 73 + chunk.cy * 37):
-            if occupied[edge]:
+    # 保底：如果 portal 总数不足 2 个，补充对边 portal 确保不产生死胡同。
+    # 这样每个 chunk 至少有两条出入路径，避免寻路时走到死路折返。
+    all_portals = forced_portals + extra
+    if len(all_portals) < 2:
+        existing_edges = {p.edge for p in all_portals}
+        # 优先在已有 portal 的对边补一个
+        for p in list(all_portals):
+            opp = _opposite_edge(p.edge)
+            if opp in existing_edges:
                 continue
-            pos = _find_free_portal_pos(edge, size, occupied, seed + chunk.cx * 31 + chunk.cy * 57)
+            if occupied[opp]:
+                continue
+            pos = _find_free_portal_pos(opp, size, occupied, seed + chunk.cx * 31 + chunk.cy * 57)
             if pos is not None:
-                dx, dy = EDGE_OFFSETS[edge]
+                dx, dy = EDGE_OFFSETS[opp]
                 connected = (chunk.cx + dx, chunk.cy + dy)
                 extra.append(Portal(
-                    edge=edge,
+                    edge=opp,
                     local_x=pos[0],
                     local_y=pos[1],
                     connected_chunk=connected,
                 ))
+                coord = pos[0] if opp in ("N", "S") else pos[1]
+                occupied[opp].add(int(coord))
+                existing_edges.add(opp)
                 break
+        # 如果还是没有 2 个，在任意空闲边补一个
+        all_portals = forced_portals + extra
+        if len(all_portals) < 2:
+            for edge in deterministic_shuffle(list(EDGES), seed + chunk.cx * 73 + chunk.cy * 37):
+                if occupied[edge]:
+                    continue
+                pos = _find_free_portal_pos(edge, size, occupied, seed + chunk.cx * 31 + chunk.cy * 57)
+                if pos is not None:
+                    dx, dy = EDGE_OFFSETS[edge]
+                    connected = (chunk.cx + dx, chunk.cy + dy)
+                    extra.append(Portal(
+                        edge=edge,
+                        local_x=pos[0],
+                        local_y=pos[1],
+                        connected_chunk=connected,
+                    ))
+                    break
 
     return extra
 
@@ -356,7 +382,8 @@ def _astar_road(chunk: Chunk, start: Tuple[int, int], goal: Tuple[int, int]) -> 
                 if not any(nxt == item[0] for item in open_set):
                     open_set.append((nxt, 0))
 
-    return _straight_line(start, goal)
+    # A* 失败时只保留起点，不画穿过阻挡物的直线
+    return {start}
 
 
 def _heuristic(a: Tuple[int, int], b: Tuple[int, int]) -> float:
@@ -372,30 +399,6 @@ def _reconstruct_path(
         current = came_from[current]
         path.append(current)
     return set(path)
-
-
-def _straight_line(start: Tuple[int, int], goal: Tuple[int, int]) -> Set[Tuple[int, int]]:
-    """Bresenham 直线作为 fallback。"""
-    points: Set[Tuple[int, int]] = set()
-    x0, y0 = start
-    x1, y1 = goal
-    dx = abs(x1 - x0)
-    dy = abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx - dy
-    while True:
-        points.add((x0, y0))
-        if x0 == x1 and y0 == y1:
-            break
-        e2 = 2 * err
-        if e2 > -dy:
-            err -= dy
-            x0 += sx
-        if e2 < dx:
-            err += dx
-            y0 += sy
-    return points
 
 
 def _opposite_edge(edge: str) -> str:

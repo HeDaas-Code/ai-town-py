@@ -88,15 +88,21 @@ def _river_path(
         dx = 1 if end[0] > x else (-1 if end[0] < x else 0)
         dy = 1 if end[1] > y else (-1 if end[1] < y else 0)
 
-        # 偶尔横向摆动
+        # 偶尔摆动：把前进方向从水平切换为垂直，或反之
         wobble = fbm_noise(step * 0.3 + seed, seed * 0.1, seed)
         if abs(wobble) > 0.4:
-            if dx != 0 and 0 <= y + dx < size:
-                dy = dx
-                dx = 0
-            elif dy != 0 and 0 <= x + dy < size:
-                dx = dy
-                dy = 0
+            if dx != 0:
+                # 水平移动 -> 尝试转为垂直
+                new_dy = dx
+                if 0 <= y + new_dy < size:
+                    dy = new_dy
+                    dx = 0
+            elif dy != 0:
+                # 垂直移动 -> 尝试转为水平
+                new_dx = dy
+                if 0 <= x + new_dx < size:
+                    dx = new_dx
+                    dy = 0
 
         x += dx
         y += dy
