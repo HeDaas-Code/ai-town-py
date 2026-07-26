@@ -419,60 +419,85 @@ class ChunkManager:
     def _assign_seed_portals(
         cls, cm: "ChunkManager", num_cx: int, num_cy: int
     ) -> None:
-        """扫描每个 seed chunk 的外边界，选择可通行位置作为 portal。"""
-        # 道路 tile id 集合（与 generation.tiles 保持一致）
+        """为 seed chunks 的所有边界生成 portal，内部边界与相邻 chunk 对齐。"""
         from .generation.tiles import ROAD_TILES
 
         road_set = set(ROAD_TILES)
+        assigned: Dict[Tuple[int, int, str], Tuple[float, float]] = {}
+
+        def coords_for(chunk: Chunk, edge: str) -> List[Tuple[int, int]]:
+            size = chunk.size
+            if edge == "N":
+                return [(x, 0) for x in range(size)]
+            if edge == "S":
+                return [(x, size - 1) for x in range(size)]
+            if edge == "W":
+                return [(0, y) for y in range(size)]
+            # E
+            return [(size - 1, y) for y in range(size)]
 
         def pick_portal_pos(chunk: Chunk, edge: str) -> Optional[Tuple[float, float]]:
-            size = chunk.size
             candidates: List[Tuple[int, int]] = []
-            if edge == "N":
-                coords = [(x, 0) for x in range(size)]
-            elif edge == "S":
-                coords = [(x, size - 1) for x in range(size)]
-            elif edge == "W":
-                coords = [(0, y) for y in range(size)]
-            else:  # E
-                coords = [(size - 1, y) for y in range(size)]
-
-            # 优先选没有碰撞的位置
-            for x, y in coords:
+            for x, y in coords_for(chunk, edge):
                 if chunk.obj_tiles and chunk.obj_tiles[0][x][y] == -1:
                     candidates.append((x, y))
-            # 其次选道路位置
             if not candidates:
-                for x, y in coords:
+                for x, y in coords_for(chunk, edge):
                     if chunk.bg_tiles and chunk.bg_tiles[0][x][y] in road_set:
                         candidates.append((x, y))
-            # 兜底：中间位置
             if not candidates:
-                mid = size // 2
-                candidates.append(coords[mid])
+                coords = coords_for(chunk, edge)
+                candidates.append(coords[len(coords) // 2])
+            x, y = candidates[len(candidates) // 2]
+            return float(x), float(y)
 
-            # 确定性选择中间候选
-            idx = len(candidates) // 2
-            return float(candidates[idx][0]), float(candidates[idx][1])
+        def opposite(edge: str) -> str:
+            return {"N": "S", "S": "N", "E": "W", "W": "E"}[edge]
+
+        def neighbor_cx_cy(cx: int, cy: int, edge: str) -> Tuple[int, int]:
+            if edge == "N":
+                return cx, cy - 1
+            if edge == "S":
+                return cx, cy + 1
+            if edge == "E":
+                return cx + 1, cy
+            return cx - 1, cy
+
+        def local_for_edge(pos: Tuple[float, float], edge: str, size: int) -> Tuple[float, float]:
+            """把坐标转换到指定边的本地坐标系（只有垂直/水平边坐标不同）。"""
+            x, y = pos
+            if edge in ("N", "S"):
+                return x, 0.0 if edge == "N" else float(size - 1)
+            return 0.0 if edge == "W" else float(size - 1), y
 
         for (cx, cy), chunk in cm.chunks.items():
+            for edge in ("N", "S", "E", "W"):
+                key = (cx, cy, edge)
+                if key in assigned:
+                    continue
+                nx, ny = neighbor_cx_cy(cx, cy, edge)
+                neighbor = cm.get_chunk(nx, ny)
+                if neighbor is not None:
+                    # 内部边界：与相邻 chunk 的对应边协商同一世界位置
+                    opp = opposite(edge)
+                    nkey = (nx, ny, opp)
+                    if nkey in assigned:
+                        pos = local_for_edge(assigned[nkey], edge, chunk.size)
+                    else:
+                        pos = pick_portal_pos(chunk, edge)
+                        assigned[nkey] = local_for_edge(pos, opp, chunk.size)
+                    assigned[key] = pos
+                else:
+                    # 外部边界：独立选择
+                    assigned[key] = pick_portal_pos(chunk, edge)
+
+        # 应用分配的 portal 到每个 chunk
+        for (cx, cy), chunk in cm.chunks.items():
             portals: List[Portal] = []
-            if cx == 0:
-                pos = pick_portal_pos(chunk, "W")
-                if pos:
-                    portals.append(Portal(edge="W", local_x=pos[0], local_y=pos[1]))
-            if cx == num_cx - 1:
-                pos = pick_portal_pos(chunk, "E")
-                if pos:
-                    portals.append(Portal(edge="E", local_x=pos[0], local_y=pos[1]))
-            if cy == 0:
-                pos = pick_portal_pos(chunk, "N")
-                if pos:
-                    portals.append(Portal(edge="N", local_x=pos[0], local_y=pos[1]))
-            if cy == num_cy - 1:
-                pos = pick_portal_pos(chunk, "S")
-                if pos:
-                    portals.append(Portal(edge="S", local_x=pos[0], local_y=pos[1]))
+            for edge in ("N", "S", "E", "W"):
+                pos = assigned.get((cx, cy, edge))
+                if pos is not None:
+                    portals.append(Portal(edge=edge, local_x=pos[0], local_y=pos[1]))
             chunk.portals = portals
 
     @staticmethod

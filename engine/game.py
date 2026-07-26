@@ -28,6 +28,7 @@ from engine.ids import GameId, alloc_game_id
 from engine.player import Player
 from engine.player_description import AgentDescription, PlayerDescription
 from engine.world import World
+from engine.chunk import world_to_chunk
 from engine.world_map import WorldMap
 
 
@@ -199,6 +200,9 @@ class Game:
                         "dx": player.facing.dx, "dy": player.facing.dy,
                         "speed": player.speed}
 
+        # 7. 预加载长距离移动路径前方的 chunk
+        self._preload_chunks_for_players()
+
     def take_diff(self) -> Dict[str, Any]:
         diff = {
             "world": self.world.to_dict(),
@@ -255,6 +259,35 @@ class Game:
                 self.next_engine_ts = int(now)
             # 不忙等：sleep 到下一个 tick
             time.sleep(max(0.0, (self.tick_duration_ms - (time.time() * 1000 - now)) / 1000.0))
+
+    def _preload_chunks_for_players(self) -> None:
+        """对正在长距离移动的玩家，预加载路径前方的 chunk。"""
+        cm = self.world_map.chunk_manager
+        chunk_size = cm.chunk_size
+        from .types import unpack_component
+
+        for player in self.world.players.values():
+            pf = player.pathfinding
+            if pf is None:
+                continue
+            state = pf.get("state")
+            if state is None or state.kind != "moving":
+                continue
+            path = state.path
+            if not path:
+                continue
+
+            # 按路径长度分成约 4 段，预加载每段端点所在 chunk
+            step = max(1, len(path) // 4)
+            for i in range(step, len(path), step):
+                pos = unpack_component(path[i]).position
+                cx, cy, _, _ = world_to_chunk(pos.x, pos.y, chunk_size)
+                cm.ensure_chunk(cx, cy)
+
+            # 也预加载最终目标所在 chunk
+            final = unpack_component(path[-1]).position
+            cx, cy, _, _ = world_to_chunk(final.x, final.y, chunk_size)
+            cm.ensure_chunk(cx, cy)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():

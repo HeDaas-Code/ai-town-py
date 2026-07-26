@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -17,9 +18,11 @@ from config import (
     MAX_CONVERSATION_DURATION_MS, MAX_CONVERSATION_MESSAGES, MESSAGE_COOLDOWN_MS,
     MIDPOINT_THRESHOLD,
 )
+from .chunk import world_to_chunk
 from .geometry import distance
 from .ids import GameId
 from .movement import move_player
+from .types import Point
 
 
 @dataclass
@@ -93,12 +96,19 @@ class Agent:
                 and not any(p.id in [m.player_id for m in c.participants.values()]
                             for c in game.world.conversations.values())
             ]
-            self.start_operation(game, now, "agentDoSomething", {
+            # 在无限世界中为 agent 预选一个跨 chunk 的远方目标
+            candidate_dest = pick_far_destination(game, player)
+            args = {
                 "player": player.to_dict(),
                 "otherFreePlayers": other_free,
                 "agent": self.to_dict(),
                 "map": game.world_map.to_dict(),
-            })
+            }
+            if candidate_dest is not None:
+                args["candidateDestination"] = {
+                    "x": candidate_dest.x, "y": candidate_dest.y,
+                }
+            self.start_operation(game, now, "agentDoSomething", args)
             return
 
         # 记忆上一段对话。
@@ -203,3 +213,75 @@ class Agent:
 def math_floor(x: float) -> int:
     import math
     return math.floor(x)
+
+
+def _spawn_far_direction(cm, cx: int, cy: int, distance: int, player_id: str) -> Tuple[Optional[int], Optional[int]]:
+    """沿确定性方向生成一串 chunk，返回最远端的 chunk 坐标。"""
+    directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+    idx = abs(hash(player_id)) % len(directions)
+    dx, dy = directions[idx]
+    tx, ty = cx, cy
+    for _ in range(distance):
+        tx += dx
+        ty += dy
+        cm.ensure_chunk(tx, ty)
+    return tx, ty
+
+
+def pick_far_destination(game, player, min_chunks: int = 3, max_chunks: int = 6) -> Optional[Point]:
+    """基于 ChunkGraph 为 agent 选择一个跨 chunk 的远处可达目标。
+
+    返回世界 tile 坐标（整数点），如果当前没有足够远的可达 chunk 则返回 None。
+    """
+    cm = game.world_map.chunk_manager
+    chunk_size = cm.chunk_size
+    cx, cy, _, _ = world_to_chunk(player.position.x, player.position.y, chunk_size)
+
+    graph = cm.chunk_graph()
+    if not graph.has_chunk((cx, cy)):
+        return None
+
+    # BFS 收集距离在 [min_chunks, max_chunks] 范围内的可达 chunk
+    queue = deque([(cx, cy, 0)])
+    visited = {(cx, cy)}
+    candidates = []
+    while queue:
+        x, y, d = queue.popleft()
+        if d > max_chunks:
+            continue
+        if min_chunks <= d <= max_chunks:
+            candidates.append((x, y))
+        for (nx, ny), _ in graph.neighbors((x, y)):
+            if (nx, ny) not in visited:
+                visited.add((nx, ny))
+                queue.append((nx, ny, d + 1))
+
+    if not candidates:
+        # 当前世界还太小：沿一个随机方向主动生成一串 chunk，让 agent 能走向远方。
+        tx, ty = _spawn_far_direction(cm, cx, cy, max_chunks, player.id)
+        if tx is None:
+            return None
+    else:
+        # 确定性选择：基于 agent id 和当前 generation 取一个稳定目标，
+        # 避免所有 agent 都涌向同一个方向。
+        idx = (hash(player.id) + game.generation) % len(candidates)
+        tx, ty = candidates[idx]
+
+    # 确保目标 chunk 已加载（会触发生成）
+    cm.ensure_chunk(tx, ty)
+
+    # 选择目标 chunk 内部一个可通行点：先尝试中心，再尝试 portal 附近
+    center_x = tx * chunk_size + chunk_size // 2
+    center_y = ty * chunk_size + chunk_size // 2
+    target_chunk = cm.get_chunk(tx, ty)
+    if target_chunk is not None and target_chunk.portals:
+        # 使用第一个 portal 往内部偏 2 tile 的位置，通常可通行
+        p = target_chunk.portals[0]
+        if p.edge in ("N", "S"):
+            center_x = tx * chunk_size + int(p.local_x)
+            center_y = ty * chunk_size + int(p.local_y) + (2 if p.edge == "N" else -2)
+        else:
+            center_x = tx * chunk_size + int(p.local_x) + (2 if p.edge == "W" else -2)
+            center_y = ty * chunk_size + int(p.local_y)
+
+    return Point(float(center_x), float(center_y))

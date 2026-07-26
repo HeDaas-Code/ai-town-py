@@ -117,8 +117,12 @@ class AgentBrain:
 
         if not player.get("pathfinding"):
             if recent_activity or just_left:
-                # 漫游到地图上一个随机点
-                destination = self._wander_destination(args["map"])
+                # 漫游：优先使用 engine/agent.py 预选的跨 chunk 远处目标
+                candidate = args.get("candidateDestination")
+                if candidate is not None:
+                    destination = candidate
+                else:
+                    destination = self._wander_destination(args["map"])
             else:
                 # 做个活动
                 act = random.choice(ACTIVITIES)
