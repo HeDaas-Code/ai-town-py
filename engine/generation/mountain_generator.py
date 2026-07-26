@@ -10,7 +10,15 @@ from typing import List, Set, Tuple
 from engine.chunk import Chunk
 from .biome import get_biome
 from .noise import fbm_noise
-from .tiles import mountain_tile
+from .tiles import (
+    ALL_ROAD_TILES,
+    RIVER_BANK_TILES,
+    RIVER_WATER_TILES,
+    mountain_tile,
+)
+
+# 山脉不应覆盖的道路/水体瓦片（防御性：当前 mountains 在道路/河流之前生成）
+_PROTECTED_BG_TILES = set(ALL_ROAD_TILES + RIVER_WATER_TILES + RIVER_BANK_TILES)
 
 
 def generate_mountains(chunk: Chunk, seed: int) -> Set[Tuple[int, int]]:
@@ -61,12 +69,21 @@ def _paint_mountains(
     mountain_cells: Set[Tuple[int, int]],
     seed: int,
 ) -> None:
-    """在山脉区域绘制瓦片并标记为阻挡。"""
+    """在山脉区域绘制瓦片并标记为阻挡。
+
+    若某格已有道路、水体或建筑，则跳过，保持已有地貌完整。
+    """
     size = chunk.size
     layer = chunk.bg_tiles[0]
     obj_layer = chunk.obj_tiles[0]
 
     for lx, ly in mountain_cells:
+        # 不覆盖道路、水体和已有建筑
+        if obj_layer[lx][ly] != -1:
+            continue
+        if layer[lx][ly] in _PROTECTED_BG_TILES:
+            continue
+
         # 边缘判断
         is_edge = any(
             (lx + dx, ly + dy) not in mountain_cells

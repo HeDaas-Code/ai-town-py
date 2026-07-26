@@ -208,14 +208,26 @@ def _place_trees(chunk, buildable: List[List[bool]], biome, seed: int) -> None:
 
 
 def _fill_grass(chunk, seed: int) -> None:
-    """把非道路、非建筑的背景 tile 填充为草地变体。"""
+    """把非道路、非建筑的背景 tile 填充为草地变体。
+
+    主要处理生成过程中可能残留的 -1/0，道路和建筑屋顶保持原样。
+    """
     size = chunk.size
     road_ids = _road_tile_ids()
+    roof_ids = _roof_tile_ids()
     for x in range(size):
         for y in range(size):
             bg = chunk.bg_tiles[0][x][y]
-            if bg not in road_ids and bg == 0:
+            if bg in road_ids or bg in roof_ids:
+                continue
+            if bg in (0, -1):
                 chunk.bg_tiles[0][x][y] = grass_tile(x, y, seed)
+
+
+def _roof_tile_ids() -> Set[int]:
+    """建筑屋顶 tile ID 集合。"""
+    from .tiles import ROOF_TILES
+    return set(ROOF_TILES)
 
 
 def _road_tile_ids() -> Set[int]:

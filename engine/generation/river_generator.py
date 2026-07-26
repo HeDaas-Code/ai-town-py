@@ -9,7 +9,15 @@ from typing import List, Optional, Set, Tuple
 
 from engine.chunk import Chunk
 from .noise import fbm_noise
-from .tiles import river_tile
+from .tiles import (
+    ALL_ROAD_TILES,
+    MOUNTAIN_EDGE_TILES,
+    MOUNTAIN_TILES,
+    river_tile,
+)
+
+# 河流不应覆盖的道路/山脉瓦片
+_PROTECTED_BG_TILES = set(ALL_ROAD_TILES + MOUNTAIN_TILES + MOUNTAIN_EDGE_TILES)
 
 
 # 河流方向：从进入边到离开边
@@ -99,19 +107,33 @@ def _river_path(
 
 
 def _paint_river(chunk: Chunk, river_cells: Set[Tuple[int, int]], seed: int) -> None:
-    """绘制河流瓦片并标记为水体阻挡。"""
+    """绘制河流瓦片并标记为水体阻挡。
+
+    河流主体不会覆盖道路、山脉或已有建筑，避免"水上公路"等异常渲染。
+    """
     size = chunk.size
     layer = chunk.bg_tiles[0]
     obj_layer = chunk.obj_tiles[0]
 
     for lx, ly in river_cells:
+        # 不覆盖道路、山脉和已有建筑
+        if obj_layer[lx][ly] != -1:
+            continue
+        if layer[lx][ly] in _PROTECTED_BG_TILES:
+            continue
         layer[lx][ly] = river_tile(lx, ly, seed, is_bank=False)
         obj_layer[lx][ly] = 1  # 水体不可通行
 
-    # 水边过渡：河流周围一圈使用 bank tile（不阻挡）
+    # 水边过渡：河流周围一圈使用 bank tile（不阻挡），但同样避让道路/建筑
     for lx, ly in list(river_cells):
         for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             nx, ny = lx + dx, ly + dy
-            if 0 <= nx < size and 0 <= ny < size and (nx, ny) not in river_cells:
-                if layer[nx][ny] not in [obj for obj in []]:
-                    layer[nx][ny] = river_tile(nx, ny, seed + 1, is_bank=True)
+            if not (0 <= nx < size and 0 <= ny < size):
+                continue
+            if (nx, ny) in river_cells:
+                continue
+            if obj_layer[nx][ny] != -1:
+                continue
+            if layer[nx][ny] in _PROTECTED_BG_TILES:
+                continue
+            layer[nx][ny] = river_tile(nx, ny, seed + 1, is_bank=True)

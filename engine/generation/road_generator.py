@@ -14,7 +14,23 @@ from config import CHUNK_SIZE, MAP_SEED
 from engine.chunk import Chunk, Portal
 from .biome import get_biome
 from .noise import fbm_noise
-from .tiles import road_tile_for_direction
+from .tiles import (
+    ALL_ROAD_TILES,
+    RIVER_BANK_TILES,
+    RIVER_WATER_TILES,
+    MOUNTAIN_EDGE_TILES,
+    MOUNTAIN_TILES,
+    road_tile_for_direction,
+)
+
+# 生成器需要避让的 tile 集合
+_PROTECTED_BG_TILES = set(
+    ALL_ROAD_TILES
+    + RIVER_WATER_TILES
+    + RIVER_BANK_TILES
+    + MOUNTAIN_TILES
+    + MOUNTAIN_EDGE_TILES
+)
 
 # 边界方向常量
 EDGES = ["N", "S", "E", "W"]
@@ -77,9 +93,14 @@ def _paint_directional_roads(
     segments: List[Set[Tuple[int, int]]],
     seed: int,
 ) -> None:
-    """根据每段道路的方向铺设对应的道路瓦片。"""
+    """根据每段道路的方向铺设对应的道路瓦片。
+
+    不会覆盖河流、山脉、建筑等已被占用的 tile，避免"看得见走不通"或道路
+    切穿自然地貌的异常渲染。
+    """
     size = chunk.size
     layer = chunk.bg_tiles[0]
+    obj_layer = chunk.obj_tiles[0]
     local_seed = seed + chunk.cx * 7 + chunk.cy * 13
 
     # 先合并所有道路 tile，统计每个 tile 的邻居方向
@@ -89,6 +110,11 @@ def _paint_directional_roads(
 
     for lx, ly in road_cells:
         if not (0 <= lx < size and 0 <= ly < size):
+            continue
+        # 避让河流、山脉、建筑（object 层被占用）
+        if obj_layer[lx][ly] != -1:
+            continue
+        if layer[lx][ly] in _PROTECTED_BG_TILES:
             continue
         direction = _road_direction_at(road_cells, lx, ly)
         layer[lx][ly] = road_tile_for_direction(lx, ly, local_seed, direction)
@@ -216,15 +242,45 @@ def _find_free_portal_pos(
 
 
 def _choose_hub(chunk: Chunk) -> Tuple[int, int]:
-    """选择道路 hub 位置，偏向 chunk 中心。"""
+    """选择道路 hub 位置，偏向 chunk 中心并避让障碍。"""
     size = chunk.size
+    layer = chunk.bg_tiles[0]
+    obj_layer = chunk.obj_tiles[0]
+
+    def usable(lx: int, ly: int) -> bool:
+        return (
+            0 <= lx < size
+            and 0 <= ly < size
+            and obj_layer[lx][ly] == -1
+            and layer[lx][ly] not in _PROTECTED_BG_TILES
+        )
+
     if not chunk.portals:
-        return int(size / 2), int(size / 2)
+        return _find_nearby_passable(size // 2, size // 2, size, usable)
+
     avg_x = sum(p.local_x for p in chunk.portals) / len(chunk.portals)
     avg_y = sum(p.local_y for p in chunk.portals) / len(chunk.portals)
     hx = int((avg_x + size / 2) / 2)
     hy = int((avg_y + size / 2) / 2)
-    return _snap_to_bounds(hx, hy, size)
+    hx, hy = _snap_to_bounds(hx, hy, size)
+    return _find_nearby_passable(hx, hy, size, usable)
+
+
+def _find_nearby_passable(
+    x: int, y: int, size: int, usable
+) -> Tuple[int, int]:
+    """从 (x,y) 开始螺旋搜索附近的可用位置。"""
+    if usable(x, y):
+        return x, y
+    for radius in range(1, size):
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                if abs(dx) != radius and abs(dy) != radius:
+                    continue
+                nx, ny = x + dx, y + dy
+                if usable(nx, ny):
+                    return nx, ny
+    return _snap_to_bounds(x, y, size)
 
 
 def _snap_to_bounds(x: int, y: int, size: int) -> Tuple[int, int]:
@@ -236,11 +292,24 @@ def _snap_to_bounds(x: int, y: int, size: int) -> Tuple[int, int]:
 
 
 def _astar_road(chunk: Chunk, start: Tuple[int, int], goal: Tuple[int, int]) -> Set[Tuple[int, int]]:
-    """在 chunk 内部用 A* 找道路路径。"""
+    """在 chunk 内部用 A* 找道路路径，自动避让河流、山脉和建筑。"""
     size = chunk.size
+    layer = chunk.bg_tiles[0]
+    obj_layer = chunk.obj_tiles[0]
 
     def passable(lx: int, ly: int) -> bool:
-        return 0 <= lx < size and 0 <= ly < size
+        if not (0 <= lx < size and 0 <= ly < size):
+            return False
+        # 起点/终点允许在边界 portal 上（可能落在已有地貌旁边）
+        if (lx, ly) == start or (lx, ly) == goal:
+            return True
+        # 避开已被占用的碰撞格
+        if obj_layer[lx][ly] != -1:
+            return False
+        # 避让河流、山脉等自然地貌
+        if layer[lx][ly] in _PROTECTED_BG_TILES:
+            return False
+        return True
 
     if start == goal:
         return {start}
