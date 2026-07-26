@@ -633,7 +633,9 @@ class Renderer:
         cell_surf.fill(grid_color)
 
         cm = self.world_map.chunk_manager
-        for (cx, cy), chunk in cm.chunks.items():
+        # 复制一份避免后台引擎线程加载/卸载 chunk 时字典改变
+        chunks_snapshot = list(cm.chunks.items())
+        for (cx, cy), chunk in chunks_snapshot:
             base_x = cx * cm.chunk_size * self.tile_dim
             base_y = cy * cm.chunk_size * self.tile_dim
             for lx in range(chunk.size):
@@ -657,7 +659,8 @@ class Renderer:
                         )
 
         # 2. 寻路路径与目标点（蓝色）
-        for player in game.world.players.values():
+        players_snapshot = list(game.world.players.values())
+        for player in players_snapshot:
             pf = player.pathfinding
             if pf is None:
                 continue
@@ -704,7 +707,8 @@ class Renderer:
         conv_radius = int(CONVERSATION_DISTANCE * self.tile_dim)
         conv_surf = pygame.Surface((conv_radius * 2, conv_radius * 2), pygame.SRCALPHA)
         pygame.draw.circle(conv_surf, (255, 0, 255, 40), (conv_radius, conv_radius), conv_radius)
-        for conversation in game.world.conversations.values():
+        conversations_snapshot = list(game.world.conversations.values())
+        for conversation in conversations_snapshot:
             for member in conversation.participants.values():
                 player = game.world.players.get(member.player_id)
                 if player is None:
@@ -718,7 +722,7 @@ class Renderer:
         # 4. 玩家碰撞箱（绿色圆）
         # movement.py 中人物间碰撞阈值 distance < 0.75 tile，半径取一半
         radius = int(0.375 * self.tile_dim)
-        for player in game.world.players.values():
+        for player in players_snapshot:
             cx, cy = self.camera.world_to_screen(
                 player.position.x * self.tile_dim,
                 player.position.y * self.tile_dim,
@@ -728,7 +732,8 @@ class Renderer:
 
         # 5. agent 当前操作名（橙色文字）
         if self._small_font is not None:
-            for agent in game.world.agents.values():
+            agents_snapshot = list(game.world.agents.values())
+            for agent in agents_snapshot:
                 player = game.world.players.get(agent.player_id)
                 if player is None:
                     continue
