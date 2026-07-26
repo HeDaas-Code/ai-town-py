@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from config import CHUNK_SIZE, MAP_SEED
 from .chunk import AnimatedSprite, Chunk, Portal, world_to_chunk
+from .chunk_graph import ChunkGraph
 
 if TYPE_CHECKING:
     from db import Database
@@ -39,6 +40,8 @@ class ChunkManager:
         self.chunk_size = chunk_size
         self.seed = seed
         self.chunks: Dict[Tuple[int, int], Chunk] = {}
+        # 已卸载 chunk 的摘要：用于长距离寻路的 ChunkGraph
+        self.summaries: Dict[Tuple[int, int], dict] = {}
         self.db = db
         self.world_id = world_id
         self.load_radius = load_radius
@@ -60,13 +63,18 @@ class ChunkManager:
         return self.chunks[key]
 
     def _load_chunk_from_db(self, cx: int, cy: int) -> Optional[Chunk]:
-        """从 SQLite 加载单个 chunk。"""
+        """从 SQLite 加载单个 chunk；如果只存在摘要，则保留摘要并返回 None。"""
         if self.db is None or self.world_id is None:
             return None
         row = self.db.load_chunk(self.world_id, cx, cy)
         if row is None:
             return None
-        return Chunk.from_dict(row["data"])
+        if row["data"] is not None:
+            return Chunk.from_dict(row["data"])
+        # 数据库中只有摘要（chunk 已卸载），保留摘要用于 ChunkGraph
+        if row["summary"] is not None:
+            self.summaries[(cx, cy)] = row["summary"]
+        return None
 
     def update_loaded_chunks(self, wx: float, wy: float) -> None:
         """根据玩家世界坐标加载附近 chunk、卸载远处 chunk。
@@ -91,21 +99,23 @@ class ChunkManager:
             self._unload_chunk(key[0], key[1])
 
     def _unload_chunk(self, cx: int, cy: int) -> None:
-        """卸载单个 chunk，如有修改则持久化到数据库。"""
+        """卸载单个 chunk，生成摘要并持久化到数据库。"""
         key = (cx, cy)
         chunk = self.chunks.pop(key, None)
         if chunk is None:
             return
-        if chunk.modified and self.db is not None and self.world_id is not None:
+        summary = self._summarize_chunk(chunk)
+        self.summaries[key] = summary
+        if self.db is not None and self.world_id is not None:
             self.db.save_chunks(
                 self.world_id,
                 [
                     {
                         "cx": chunk.cx,
                         "cy": chunk.cy,
-                        "data": chunk.to_dict(),
-                        "summary": None,
-                        "modified": True,
+                        "data": chunk.to_dict() if chunk.modified else None,
+                        "summary": summary,
+                        "modified": chunk.modified,
                     }
                 ],
             )
@@ -115,6 +125,50 @@ class ChunkManager:
 
     def loaded_chunks(self) -> List[Tuple[int, int]]:
         return list(self.chunks.keys())
+
+    def chunk_graph(self) -> ChunkGraph:
+        """构建包含已加载 chunks 和已卸载摘要的 ChunkGraph。"""
+        graph = ChunkGraph()
+
+        def add_from_summary(summary: dict) -> None:
+            cx, cy = summary["cx"], summary["cy"]
+            graph.add_chunk(cx, cy)
+            for p in summary.get("portals", []):
+                nx, ny = p.get("connectedChunk")
+                if nx is None or ny is None:
+                    continue
+                graph.add_edge((cx, cy), (nx, ny))
+
+        # 已加载 chunk
+        for chunk in self.chunks.values():
+            graph.add_chunk(chunk.cx, chunk.cy)
+            for p in chunk.portals:
+                graph.add_edge((chunk.cx, chunk.cy), p.connected_chunk)
+
+        # 已卸载摘要
+        for summary in self.summaries.values():
+            add_from_summary(summary)
+
+        return graph
+
+    @staticmethod
+    def _summarize_chunk(chunk: Chunk) -> dict:
+        """生成 chunk 摘要，供 ChunkGraph 长距离寻路使用。"""
+        return {
+            "cx": chunk.cx,
+            "cy": chunk.cy,
+            "biome": chunk.biome,
+            "portals": [
+                {
+                    "edge": p.edge,
+                    "localX": p.local_x,
+                    "localY": p.local_y,
+                    "connectedChunk": list(p.connected_chunk),
+                    "connectedPortalIdx": p.connected_portal_idx,
+                }
+                for p in chunk.portals
+            ],
+        }
 
     def get_bg_tile(self, wx: float, wy: float, layer: int = 0) -> int:
         cx, cy, lx, ly = world_to_chunk(wx, wy, self.chunk_size)

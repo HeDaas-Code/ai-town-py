@@ -48,9 +48,13 @@ def build_game(
         world_map.chunk_manager.chunk_size = meta.chunk_manager.chunk_size
         world_map.chunk_manager.seed = meta.chunk_manager.seed
     for c in saved_chunks:
-        chunk = Chunk.from_dict(c["data"])
-        chunk.modified = c.get("modified", False)
-        world_map.chunk_manager.chunks[(chunk.cx, chunk.cy)] = chunk
+        if c["data"] is not None:
+            chunk = Chunk.from_dict(c["data"])
+            chunk.modified = c.get("modified", False)
+            world_map.chunk_manager.chunks[(chunk.cx, chunk.cy)] = chunk
+        elif c["summary"] is not None:
+            # 只有摘要的已卸载 chunk，用于 ChunkGraph 长距离寻路
+            world_map.chunk_manager.summaries[(c["cx"], c["cy"])] = c["summary"]
 
     # 尝试从 SQLite 恢复世界状态；没有就新建
     state = db.load_world(config.world_id)

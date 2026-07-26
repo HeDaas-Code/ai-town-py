@@ -229,7 +229,9 @@ class Database:
                     "INSERT INTO chunks(world_id, cx, cy, data_json, summary_json, modified) "
                     "VALUES(?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(world_id, cx, cy) DO UPDATE SET "
-                    "data_json=excluded.data_json, summary_json=excluded.summary_json, modified=excluded.modified",
+                    "data_json=COALESCE(excluded.data_json, data_json), "
+                    "summary_json=COALESCE(excluded.summary_json, summary_json), "
+                    "modified=excluded.modified",
                     (
                         world_id,
                         c["cx"],
@@ -252,7 +254,7 @@ class Database:
             {
                 "cx": r["cx"],
                 "cy": r["cy"],
-                "data": json.loads(r["data_json"]),
+                "data": json.loads(r["data_json"]) if r["data_json"] is not None else None,
                 "summary": json.loads(r["summary_json"]) if r["summary_json"] else None,
                 "modified": bool(r["modified"]),
             }
@@ -272,7 +274,7 @@ class Database:
         return {
             "cx": row["cx"],
             "cy": row["cy"],
-            "data": json.loads(row["data_json"]),
+            "data": json.loads(row["data_json"]) if row["data_json"] is not None else None,
             "summary": json.loads(row["summary_json"]) if row["summary_json"] else None,
             "modified": bool(row["modified"]),
         }

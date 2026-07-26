@@ -2,14 +2,19 @@
 
 移植自原项目 convex/aiTown/movement.ts。地图坐标系下做网格寻路，
 允许从非整点位置出发，先对齐到网格再走 A*，最后压缩路径。
+
+无限世界支持：
+- 同 chunk 内走局部网格 A*
+- 跨 chunk 时先在 ChunkGraph 上找 chunk 序列，再分段走局部 A*
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from config import MOVEMENT_SPEED
+from .chunk import chunk_to_world, world_to_chunk
 from .geometry import compress_path, distance, manhattan_distance, points_equal
 from .minheap import MinHeap
 from .types import Path, PathComponent, Point, Vector
@@ -59,8 +64,116 @@ def move_player(game, now: float, player, destination: Point,
 
 
 def find_route(game, now: float, player, destination: Point):
-    """A* 寻路。返回 ``{path, new_destination}`` 或 ``None``。"""
-    world_map = game.world_map
+    """A* 寻路。返回 ``{path, new_destination}`` 或 ``None``。
+
+    同 chunk 内直接走网格 A*；跨 chunk 时先通过 ChunkGraph 规划 chunk
+    序列，再分段走局部 A*。
+    """
+    chunk_size = game.world_map.chunk_manager.chunk_size
+    start_cx, start_cy, _, _ = world_to_chunk(player.position.x, player.position.y, chunk_size)
+    dest_cx, dest_cy, _, _ = world_to_chunk(destination.x, destination.y, chunk_size)
+
+    if (start_cx, start_cy) == (dest_cx, dest_cy):
+        return _find_grid_route(game, now, player, player.position, destination)
+
+    return _find_long_route(game, now, player, destination)
+
+
+def _find_long_route(game, now: float, player, destination: Point):
+    """跨 chunk 长距离寻路：ChunkGraph + 分段网格 A*。"""
+    cm = game.world_map.chunk_manager
+    chunk_size = cm.chunk_size
+
+    # 确保起点和终点 chunk 已加载（终点必须存在才能规划）
+    start_cx, start_cy, _, _ = world_to_chunk(player.position.x, player.position.y, chunk_size)
+    dest_cx, dest_cy, _, _ = world_to_chunk(destination.x, destination.y, chunk_size)
+    cm.ensure_chunk(start_cx, start_cy)
+    cm.ensure_chunk(dest_cx, dest_cy)
+
+    graph = cm.chunk_graph()
+    chunk_path = graph.find_path((start_cx, start_cy), (dest_cx, dest_cy))
+    if chunk_path is None:
+        # 没有 chunk 级路径时回退到直接网格 A*（通常走不通，但保留兼容）
+        return _find_grid_route(game, now, player, player.position, destination)
+
+    # 把 chunk 序列转换为 portal 世界坐标路径点
+    waypoints = _chunk_path_to_waypoints(chunk_path, cm, chunk_size)
+    if waypoints is None:
+        return _find_grid_route(game, now, player, player.position, destination)
+
+    # 最后一段：最后一个 portal -> 最终目的地
+    waypoints.append(destination)
+
+    # 分段网格 A* 并拼接路径
+    full_dense: List[PathComponent] = []
+    current_pos = player.position
+    current_facing = player.facing
+    current_t = now
+    new_destination: Optional[Point] = None
+
+    for i, waypoint in enumerate(waypoints):
+        route = _find_grid_route(
+            game, now, player, current_pos, waypoint,
+            start_facing=current_facing, start_t=current_t,
+        )
+        if route is None:
+            return None
+        segment = route["path"]
+        if not segment:
+            current_pos = waypoint
+            continue
+        full_dense.extend(segment)
+        # 下一段起点为当前段终点
+        last = segment[-1]
+        current_pos = last.position
+        current_facing = last.facing
+        current_t = last.t
+        if route["new_destination"] is not None:
+            new_destination = route["new_destination"]
+            # 如果不能到达当前 waypoint，但还能走一段，就到此为止
+            if i < len(waypoints) - 1:
+                break
+
+    if not full_dense:
+        return None
+
+    compressed = compress_path(full_dense)
+    return {"path": compressed, "new_destination": new_destination}
+
+
+def _chunk_path_to_waypoints(
+    chunk_path: List[Tuple[int, int]], cm, chunk_size: int
+) -> Optional[List[Point]]:
+    """把 chunk 路径转换为途经 portal 的世界坐标列表（不含终点）。"""
+    waypoints: List[Point] = []
+    for i in range(len(chunk_path) - 1):
+        a = chunk_path[i]
+        b = chunk_path[i + 1]
+        chunk = cm.get_chunk(a[0], a[1])
+        if chunk is None:
+            return None
+        portal = None
+        for p in chunk.portals:
+            if p.connected_chunk == b:
+                portal = p
+                break
+        if portal is None:
+            return None
+        wx, wy = chunk_to_world(a[0], a[1], int(portal.local_x), int(portal.local_y), chunk_size)
+        waypoints.append(Point(wx, wy))
+    return waypoints
+
+
+def _find_grid_route(
+    game,
+    now: float,
+    player,
+    start_pos: Point,
+    destination: Point,
+    start_facing: Optional[Vector] = None,
+    start_t: Optional[float] = None,
+):
+    """局部网格 A*。支持指定起点、朝向与时间，用于分段寻路拼接。"""
     # 使用字典以支持负坐标（无限世界）
     min_distances: Dict[Tuple[int, int], PathCandidate] = {}
 
@@ -106,11 +219,10 @@ def find_route(game, now: float, player, destination: Point):
             nxt.append(candidate)
         return nxt
 
-    start_pos = Point(player.position.x, player.position.y)
     current: Optional[PathCandidate] = PathCandidate(
         position=start_pos,
-        facing=player.facing,
-        t=now,
+        facing=start_facing if start_facing is not None else player.facing,
+        t=start_t if start_t is not None else now,
         length=0.0,
         cost=manhattan_distance(start_pos, destination),
         prev=None,
