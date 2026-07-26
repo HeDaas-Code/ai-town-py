@@ -356,7 +356,70 @@ class ChunkManager:
                     if base_px_x <= s.x < next_px_x and base_px_y <= s.y < next_px_y
                 ]
                 cm.chunks[(cx, cy)] = chunk
+
+        # 为 seed chunks 的外边界生成 portal，确保与后续程序化生成 chunk 的道路对齐。
+        cls._assign_seed_portals(cm, num_cx, num_cy)
         return cm
+
+    @classmethod
+    def _assign_seed_portals(
+        cls, cm: "ChunkManager", num_cx: int, num_cy: int
+    ) -> None:
+        """扫描每个 seed chunk 的外边界，选择可通行位置作为 portal。"""
+        # 道路 tile id 集合（与 generation.tiles 保持一致）
+        from .generation.tiles import ROAD_TILES
+
+        road_set = set(ROAD_TILES)
+
+        def pick_portal_pos(chunk: Chunk, edge: str) -> Optional[Tuple[float, float]]:
+            size = chunk.size
+            candidates: List[Tuple[int, int]] = []
+            if edge == "N":
+                coords = [(x, 0) for x in range(size)]
+            elif edge == "S":
+                coords = [(x, size - 1) for x in range(size)]
+            elif edge == "W":
+                coords = [(0, y) for y in range(size)]
+            else:  # E
+                coords = [(size - 1, y) for y in range(size)]
+
+            # 优先选没有碰撞的位置
+            for x, y in coords:
+                if chunk.obj_tiles and chunk.obj_tiles[0][x][y] == -1:
+                    candidates.append((x, y))
+            # 其次选道路位置
+            if not candidates:
+                for x, y in coords:
+                    if chunk.bg_tiles and chunk.bg_tiles[0][x][y] in road_set:
+                        candidates.append((x, y))
+            # 兜底：中间位置
+            if not candidates:
+                mid = size // 2
+                candidates.append(coords[mid])
+
+            # 确定性选择中间候选
+            idx = len(candidates) // 2
+            return float(candidates[idx][0]), float(candidates[idx][1])
+
+        for (cx, cy), chunk in cm.chunks.items():
+            portals: List[Portal] = []
+            if cx == 0:
+                pos = pick_portal_pos(chunk, "W")
+                if pos:
+                    portals.append(Portal(edge="W", local_x=pos[0], local_y=pos[1]))
+            if cx == num_cx - 1:
+                pos = pick_portal_pos(chunk, "E")
+                if pos:
+                    portals.append(Portal(edge="E", local_x=pos[0], local_y=pos[1]))
+            if cy == 0:
+                pos = pick_portal_pos(chunk, "N")
+                if pos:
+                    portals.append(Portal(edge="N", local_x=pos[0], local_y=pos[1]))
+            if cy == num_cy - 1:
+                pos = pick_portal_pos(chunk, "S")
+                if pos:
+                    portals.append(Portal(edge="S", local_x=pos[0], local_y=pos[1]))
+            chunk.portals = portals
 
     @staticmethod
     def _slice_layers(layers: List, cx: int, cy: int, chunk_size: int, map_w: int, map_h: int) -> List:

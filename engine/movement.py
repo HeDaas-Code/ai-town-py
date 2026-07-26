@@ -61,7 +61,8 @@ def move_player(game, now: float, player, destination: Point,
 def find_route(game, now: float, player, destination: Point):
     """A* 寻路。返回 ``{path, new_destination}`` 或 ``None``。"""
     world_map = game.world_map
-    min_distances: List[List[Optional[PathCandidate]]] = []
+    # 使用字典以支持负坐标（无限世界）
+    min_distances: Dict[Tuple[int, int], PathCandidate] = {}
 
     def explore(current: PathCandidate) -> List[PathCandidate]:
         x, y = current.position.x, current.position.y
@@ -96,17 +97,12 @@ def find_route(game, now: float, player, destination: Point):
                 cost=length + remaining,
                 prev=current,
             )
-            # 维护每个网格点的最优 cost。
+            # 维护每个网格点的最优 cost（用字典支持负坐标）。
             ix, iy = int(pos.x), int(pos.y)
-            while len(min_distances) <= iy:
-                min_distances.append([])
-            row = min_distances[iy]
-            while len(row) <= ix:
-                row.append(None)
-            existing = row[ix]
+            existing = min_distances.get((ix, iy))
             if existing is not None and existing.cost <= candidate.cost:
                 continue
-            row[ix] = candidate
+            min_distances[(ix, iy)] = candidate
             nxt.append(candidate)
         return nxt
 
