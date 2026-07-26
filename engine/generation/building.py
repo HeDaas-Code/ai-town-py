@@ -83,8 +83,8 @@ def _place_buildings(
     buildings: List[Tuple[int, int, int, int]] = []
 
     # 根据 biome.building_density 决定尝试次数
-    attempts = int(size * size * biome.building_density * 0.08)
-    attempts = max(1, min(attempts, 40))
+    attempts = int(size * size * biome.building_density * 0.025)
+    attempts = max(1, min(attempts, 12))
 
     for i in range(attempts):
         # 确定性但随位置变化的尺寸
@@ -195,8 +195,8 @@ def _place_trees(chunk, buildable: List[List[bool]], biome, seed: int) -> None:
     if tree_density <= 0:
         return
 
-    attempts = int(size * size * tree_density * 0.15)
-    attempts = max(0, min(attempts, 80))
+    attempts = int(size * size * tree_density * 0.05)
+    attempts = max(0, min(attempts, 24))
 
     for i in range(attempts):
         n = fbm_noise(chunk.cx + i * 0.05, chunk.cy + i * 0.05, seed + i)

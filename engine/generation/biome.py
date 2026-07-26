@@ -25,33 +25,33 @@ BIOMES: Dict[str, Biome] = {
     "residential": Biome(
         name="residential",
         color="#A8D5BA",
-        road_density=0.4,
-        building_density=0.35,
-        tree_density=0.25,
+        road_density=0.25,
+        building_density=0.12,
+        tree_density=0.06,
         description="住宅区，有房屋、花园和小路",
     ),
     "commercial": Biome(
         name="commercial",
         color="#F7DC6F",
-        road_density=0.55,
-        building_density=0.45,
-        tree_density=0.1,
+        road_density=0.35,
+        building_density=0.18,
+        tree_density=0.03,
         description="商业区，有商店、广场和密集街道",
     ),
     "industrial": Biome(
         name="industrial",
         color="#BDC3C7",
-        road_density=0.35,
-        building_density=0.4,
-        tree_density=0.05,
+        road_density=0.22,
+        building_density=0.15,
+        tree_density=0.02,
         description="工业区，有仓库和工厂",
     ),
     "park": Biome(
         name="park",
         color="#82E0AA",
-        road_density=0.2,
-        building_density=0.05,
-        tree_density=0.7,
+        road_density=0.12,
+        building_density=0.02,
+        tree_density=0.18,
         description="公园区，树木和草地为主",
     ),
 }
@@ -63,15 +63,16 @@ def biome_at(cx: int, cy: int, seed: int = MAP_SEED) -> str:
     使用两个不同尺度的 FBM：一个大尺度决定宏观布局，一个小尺度增加局部变化。
     """
     # 世界坐标（把 chunk 坐标映射到噪声空间）
-    nx = cx * 0.15
-    ny = cy * 0.15
+    # 降低频率，让功能区更大、过渡更平缓
+    nx = cx * 0.08
+    ny = cy * 0.08
 
     # 大尺度：主导功能区分布
     large = fbm_noise(nx, ny, seed + 1, octaves=4)
     # 小尺度：混合边界
-    small = fbm_noise(nx * 2.5, ny * 2.5, seed + 2, octaves=3)
+    small = fbm_noise(nx * 2.0, ny * 2.0, seed + 2, octaves=3)
 
-    value = large * 0.7 + small * 0.3
+    value = large * 0.75 + small * 0.25
 
     if value > 0.35:
         return "commercial"
