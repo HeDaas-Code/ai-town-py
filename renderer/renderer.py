@@ -204,9 +204,8 @@ class Renderer:
         self._anim_sheets: Dict[str, Spritesheet] = {}
         self._load_anim_sheets()
 
-        # 分层地图缓存（渲染顺序从下到上：背景 -> 建筑 -> 物品 -> 人物 -> UI）
-        self._background_layer: Optional[pygame.Surface] = None
-        self._building_layer: Optional[pygame.Surface] = None
+        # 分层地图缓存：按 chunk 缓存背景/建筑 Surface
+        self._chunk_surfs: Dict[Tuple[int, int], Tuple[Optional[pygame.Surface], Optional[pygame.Surface]]] = {}
 
         # 字体（用于对话气泡）
         self._font: Optional[pygame.font.Font] = None
@@ -249,56 +248,79 @@ class Renderer:
             self._font = pygame.font.SysFont(None, 16)
             self._small_font = pygame.font.SysFont(None, 12)
 
-    # ---- 分层地图 ----
-    def _build_background_layer(self) -> pygame.Surface:
-        """背景层：只包含 bg_tiles，是最底层。"""
-        w = self.world_map.width * self.tile_dim
-        h = self.world_map.height * self.tile_dim
-        surf = pygame.Surface((w, h), pygame.SRCALPHA).convert_alpha()
-        for x in range(self.world_map.width):
-            for y in range(self.world_map.height):
-                px = x * self.tile_dim
-                py = y * self.tile_dim
-                for layer in self.world_map.bg_tiles:
-                    if x >= len(layer) or y >= len(layer[x]):
-                        continue
-                    idx = layer[x][y]
+    # ---- 分层地图（按 chunk） ----
+    def _visible_chunks(self) -> List[Tuple[int, int]]:
+        """返回当前视野内（含边界缓冲一个 chunk）的 chunk 坐标列表。"""
+        cm = self.world_map.chunk_manager
+        cs = cm.chunk_size * self.tile_dim
+        left = int(self.camera.camera_x - cs)
+        top = int(self.camera.camera_y - cs)
+        right = int(self.camera.camera_x + self.camera.width + cs)
+        bottom = int(self.camera.camera_y + self.camera.height + cs)
+
+        min_cx = math.floor(left / cs)
+        min_cy = math.floor(top / cs)
+        max_cx = math.floor(right / cs)
+        max_cy = math.floor(bottom / cs)
+
+        visible = []
+        for cx in range(min_cx, max_cx + 1):
+            for cy in range(min_cy, max_cy + 1):
+                if cm.is_loaded(cx, cy):
+                    visible.append((cx, cy))
+        return visible
+
+    def _build_chunk_bg_surf(self, chunk) -> pygame.Surface:
+        """构建单个 chunk 的背景层 Surface。"""
+        size_px = chunk.size * self.tile_dim
+        surf = pygame.Surface((size_px, size_px), pygame.SRCALPHA).convert_alpha()
+        for layer in chunk.bg_tiles:
+            for lx in range(chunk.size):
+                for ly in range(chunk.size):
+                    idx = layer[lx][ly]
                     if idx is None or idx < 0:
                         continue
                     tile = self.tileset.get(idx)
                     if tile is not None:
-                        surf.blit(tile, (px, py))
+                        surf.blit(tile, (lx * self.tile_dim, ly * self.tile_dim))
         return surf
 
-    def _build_building_layer(self) -> pygame.Surface:
-        """建筑层：只包含 object_tiles，覆盖在背景层之上、人物层之下。"""
-        w = self.world_map.width * self.tile_dim
-        h = self.world_map.height * self.tile_dim
-        surf = pygame.Surface((w, h), pygame.SRCALPHA).convert_alpha()
-        for x in range(self.world_map.width):
-            for y in range(self.world_map.height):
-                px = x * self.tile_dim
-                py = y * self.tile_dim
-                for layer in self.world_map.object_tiles:
-                    if x >= len(layer) or y >= len(layer[x]):
-                        continue
-                    idx = layer[x][y]
+    def _build_chunk_building_surf(self, chunk) -> pygame.Surface:
+        """构建单个 chunk 的建筑层 Surface。"""
+        size_px = chunk.size * self.tile_dim
+        surf = pygame.Surface((size_px, size_px), pygame.SRCALPHA).convert_alpha()
+        for layer in chunk.obj_tiles:
+            for lx in range(chunk.size):
+                for ly in range(chunk.size):
+                    idx = layer[lx][ly]
                     if idx is None or idx < 0:
                         continue
                     tile = self.tileset.get(idx)
                     if tile is not None:
-                        surf.blit(tile, (px, py))
+                        surf.blit(tile, (lx * self.tile_dim, ly * self.tile_dim))
         return surf
 
-    def _get_background_layer(self) -> pygame.Surface:
-        if self._background_layer is None:
-            self._background_layer = self._build_background_layer()
-        return self._background_layer
+    def _get_chunk_surfs(self, cx: int, cy: int) -> Tuple[pygame.Surface, pygame.Surface]:
+        """获取 chunk 的背景/建筑 Surface（带缓存）。"""
+        cached = self._chunk_surfs.get((cx, cy))
+        if cached is not None and cached[0] is not None and cached[1] is not None:
+            return cached
 
-    def _get_building_layer(self) -> pygame.Surface:
-        if self._building_layer is None:
-            self._building_layer = self._build_building_layer()
-        return self._building_layer
+        chunk = self.world_map.chunk_manager.get_chunk(cx, cy)
+        if chunk is None:
+            size_px = self.world_map.chunk_manager.chunk_size * self.tile_dim
+            empty = pygame.Surface((size_px, size_px), pygame.SRCALPHA)
+            self._chunk_surfs[(cx, cy)] = (empty, empty)
+            return empty, empty
+
+        bg = self._build_chunk_bg_surf(chunk)
+        building = self._build_chunk_building_surf(chunk)
+        self._chunk_surfs[(cx, cy)] = (bg, building)
+        return bg, building
+
+    def _clear_chunk_cache(self, cx: int, cy: int) -> None:
+        """chunk 数据变化时清除对应缓存。"""
+        self._chunk_surfs.pop((cx, cy), None)
 
     # ---- 气泡 ----
     def add_bubble(self, player_id: str, text: str, now_ms: int) -> None:
@@ -355,20 +377,18 @@ class Renderer:
             self.world_map.height * self.tile_dim,
         )
 
-        cam_x = int(self.camera.camera_x)
-        cam_y = int(self.camera.camera_y)
-
         # 2. 清屏
         self.screen.fill((0, 0, 0))
 
         # ---- 场景层（从下到上） ----
-        # 3. 背景层
-        bg_layer = self._get_background_layer()
-        self.screen.blit(bg_layer, (-cam_x, -cam_y))
-
-        # 4. 建筑层
-        building_layer = self._get_building_layer()
-        self.screen.blit(building_layer, (-cam_x, -cam_y))
+        # 3. 背景层 + 4. 建筑层（按 chunk 绘制）
+        for cx, cy in self._visible_chunks():
+            bg_surf, building_surf = self._get_chunk_surfs(cx, cy)
+            offset_x = cx * self.world_map.chunk_manager.chunk_size * self.tile_dim
+            offset_y = cy * self.world_map.chunk_manager.chunk_size * self.tile_dim
+            sx, sy = self.camera.world_to_screen(offset_x, offset_y)
+            self.screen.blit(bg_surf, (int(sx), int(sy)))
+            self.screen.blit(building_surf, (int(sx), int(sy)))
 
         # 5. 动态实体层（人物 + 物品动画精灵）
         # 大五层中，人物层在物品层之上；但实际需要按 y 深度交错遮挡，
@@ -409,12 +429,26 @@ class Renderer:
         """构建动画精灵的可绘制项，返回 (sort_y, surface, screen_x, screen_y)。
 
         不直接绘制，以便与人物按深度排序后统一绘制。
+        从所有已加载 chunk 中收集动画精灵。
         """
         drawables: List[Tuple[float, pygame.Surface, float, float]] = []
-        # 按 sheet 分组减少状态切换
+        cm = self.world_map.chunk_manager
+        cs_px = cm.chunk_size * self.tile_dim
+
+        # 按 sheet 分组减少状态切换（跨 chunk 汇总）
         by_sheet: Dict[str, List] = {}
-        for spr in self.world_map.animated_sprites:
-            by_sheet.setdefault(spr.sheet, []).append(spr)
+        for (cx, cy), chunk in cm.chunks.items():
+            offset_x = cx * cs_px
+            offset_y = cy * cs_px
+            for spr in chunk.animated_sprites:
+                # 转换为世界像素坐标
+                world_spr = type(spr)(
+                    x=spr.x + offset_x,
+                    y=spr.y + offset_y,
+                    w=spr.w, h=spr.h, layer=spr.layer,
+                    sheet=spr.sheet, animation=spr.animation,
+                )
+                by_sheet.setdefault(world_spr.sheet, []).append(world_spr)
 
         for sheet_name, sprites in by_sheet.items():
             sheet = self._anim_sheets.get(sheet_name)
@@ -590,29 +624,35 @@ class Renderer:
         if self.screen is None:
             return
 
-        # 1. 碰撞网格：object_tiles 中不可通过的格子
+        # 1. 碰撞网格：object_tiles 中不可通过的格子（按 chunk 遍历）
         grid_color = (255, 0, 0, 60)
         grid_border = (255, 0, 0, 180)
         cell_surf = pygame.Surface((self.tile_dim, self.tile_dim), pygame.SRCALPHA)
         cell_surf.fill(grid_color)
 
-        for x in range(self.world_map.width):
-            for y in range(self.world_map.height):
-                blocked = any(
-                    layer[x][y] != -1
-                    for layer in self.world_map.object_tiles
-                    if x < len(layer) and y < len(layer[x])
-                )
-                if not blocked:
-                    continue
-                px, py = self.camera.world_to_screen(x * self.tile_dim, y * self.tile_dim)
-                # 只画可见区域
-                if -self.tile_dim < px < self.camera.width and -self.tile_dim < py < self.camera.height:
-                    self.screen.blit(cell_surf, (int(px), int(py)))
-                    pygame.draw.rect(
-                        self.screen, grid_border,
-                        (int(px), int(py), self.tile_dim, self.tile_dim), 1
+        cm = self.world_map.chunk_manager
+        for (cx, cy), chunk in cm.chunks.items():
+            base_x = cx * cm.chunk_size * self.tile_dim
+            base_y = cy * cm.chunk_size * self.tile_dim
+            for lx in range(chunk.size):
+                for ly in range(chunk.size):
+                    blocked = any(
+                        layer[lx][ly] != -1
+                        for layer in chunk.obj_tiles
+                        if lx < len(layer) and ly < len(layer[lx])
                     )
+                    if not blocked:
+                        continue
+                    wx = base_x + lx * self.tile_dim
+                    wy = base_y + ly * self.tile_dim
+                    px, py = self.camera.world_to_screen(wx, wy)
+                    # 只画可见区域
+                    if -self.tile_dim < px < self.camera.width and -self.tile_dim < py < self.camera.height:
+                        self.screen.blit(cell_surf, (int(px), int(py)))
+                        pygame.draw.rect(
+                            self.screen, grid_border,
+                            (int(px), int(py), self.tile_dim, self.tile_dim), 1
+                        )
 
         # 2. 寻路路径与目标点（蓝色）
         for player in game.world.players.values():

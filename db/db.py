@@ -38,6 +38,16 @@ CREATE TABLE IF NOT EXISTS maps (
     map_json     TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chunks (
+    world_id     TEXT NOT NULL,
+    cx           INTEGER NOT NULL,
+    cy           INTEGER NOT NULL,
+    data_json    TEXT NOT NULL,
+    summary_json TEXT,
+    modified     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (world_id, cx, cy)
+);
+
 CREATE TABLE IF NOT EXISTS player_descriptions (
     world_id     TEXT NOT NULL,
     player_id    TEXT NOT NULL,
@@ -207,6 +217,55 @@ class Database:
                 "SELECT map_json FROM maps WHERE world_id=?", (world_id,)
             ).fetchone()
         return json.loads(row["map_json"]) if row else None
+
+    # ---- chunks ----
+    def save_chunks(self, world_id: str, chunks: List[Dict[str, Any]]) -> None:
+        """增量保存（新增或更新）一组 chunk。"""
+        if not chunks:
+            return
+        with self._lock:
+            for c in chunks:
+                self._conn.execute(
+                    "INSERT INTO chunks(world_id, cx, cy, data_json, summary_json, modified) "
+                    "VALUES(?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(world_id, cx, cy) DO UPDATE SET "
+                    "data_json=excluded.data_json, summary_json=excluded.summary_json, modified=excluded.modified",
+                    (
+                        world_id,
+                        c["cx"],
+                        c["cy"],
+                        json.dumps(c["data"]),
+                        json.dumps(c.get("summary")),
+                        1 if c.get("modified", False) else 0,
+                    ),
+                )
+            self._conn.commit()
+
+    def load_chunks(self, world_id: str) -> List[Dict[str, Any]]:
+        """加载 world 的所有完整 chunk 数据。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT cx, cy, data_json, summary_json, modified FROM chunks WHERE world_id=?",
+                (world_id,),
+            ).fetchall()
+        return [
+            {
+                "cx": r["cx"],
+                "cy": r["cy"],
+                "data": json.loads(r["data_json"]),
+                "summary": json.loads(r["summary_json"]) if r["summary_json"] else None,
+                "modified": bool(r["modified"]),
+            }
+            for r in rows
+        ]
+
+    def clear_modified_chunks(self, world_id: str) -> None:
+        """保存完成后把 modified 标记清零。"""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE chunks SET modified=0 WHERE world_id=?", (world_id,)
+            )
+            self._conn.commit()
 
     # ---- descriptions ----
     def save_player_descriptions(self, world_id: str, descs: List[Dict[str, Any]]) -> None:

@@ -16,6 +16,7 @@ from engine.game import Game
 from engine.player import Player
 from engine.player_description import AgentDescription
 from engine.world import World
+from engine.chunk import Chunk
 from engine.world_map import WorldMap
 from llm import LLMClient, OfflineLLMClient
 
@@ -29,7 +30,27 @@ def build_game(
     db = db or Database(config.db_path)
     world_map = WorldMap.load(config.map_path)
 
-    # 尝试从 SQLite 恢复；没有就新建
+    # 尝试从 SQLite 恢复地图元数据和 chunks
+    # 先保留 gentle.json 中的 seed chunk，再用 saved_map 覆盖元数据，
+    # 最后用数据库中的 chunks 覆盖/补充。这样即使 chunks 表为空也不会丢失 seed chunk。
+    saved_map = db.load_map(config.world_id)
+    saved_chunks = db.load_chunks(config.world_id)
+    if saved_map is not None:
+        meta = WorldMap.from_dict(saved_map)
+        world_map.tile_set_url = meta.tile_set_url
+        world_map.tile_set_dim_x = meta.tile_set_dim_x
+        world_map.tile_set_dim_y = meta.tile_set_dim_y
+        world_map.tile_dim = meta.tile_dim
+        world_map.map_width = meta.map_width
+        world_map.map_height = meta.map_height
+        world_map.chunk_manager.chunk_size = meta.chunk_manager.chunk_size
+        world_map.chunk_manager.seed = meta.chunk_manager.seed
+    for c in saved_chunks:
+        chunk = Chunk.from_dict(c["data"])
+        chunk.modified = c.get("modified", False)
+        world_map.chunk_manager.chunks[(chunk.cx, chunk.cy)] = chunk
+
+    # 尝试从 SQLite 恢复世界状态；没有就新建
     state = db.load_world(config.world_id)
     if state is not None:
         world = World.from_dict(state["world"])

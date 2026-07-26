@@ -210,8 +210,14 @@ class Game:
         if self.descriptions_modified:
             diff["playerDescriptions"] = [p.to_dict() for p in self.player_descriptions.values()]
             diff["agentDescriptions"] = [a.to_dict() for a in self.agent_descriptions.values()]
-            diff["worldMap"] = self.world_map.to_dict()
             self.descriptions_modified = False
+        # 地图元数据（很小，每个 step 都写）
+        diff["worldMap"] = self.world_map.to_dict()
+        # 增量 chunk：只保存 modified=True 的 chunk
+        diff["modifiedChunks"] = [
+            {"cx": c.cx, "cy": c.cy, "data": c.to_dict(), "modified": c.modified}
+            for c in self.world_map.chunk_manager.get_modified_chunks()
+        ]
         return diff
 
     def save_step(self) -> None:
@@ -222,8 +228,12 @@ class Game:
             self.db.save_player_descriptions(self.world_id, diff["playerDescriptions"])
         if "agentDescriptions" in diff:
             self.db.save_agent_descriptions(self.world_id, diff["agentDescriptions"])
-        if "worldMap" in diff:
-            self.db.save_map(self.world_id, diff["worldMap"])
+        self.db.save_map(self.world_id, diff["worldMap"])
+        self.db.save_chunks(self.world_id, diff["modifiedChunks"])
+        self.db.clear_modified_chunks(self.world_id)
+        # 内存中也清空 modified 标记
+        for chunk in self.world_map.chunk_manager.chunks.values():
+            chunk.modified = False
         self.db.set_engine_state(self.world_id, self.next_engine_ts, self.generation)
 
     # ---- 主循环 ----

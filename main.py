@@ -426,6 +426,11 @@ def _run_headless(game, config: AppConfig, viewer_id: GameId) -> None:
             )
             print(f"[headless] {stats}")
     finally:
+        # headless 模式没有主循环的 save_step，退出前手动落盘一次
+        try:
+            game.save_step()
+        except Exception as e:  # noqa: BLE001
+            print(f"[headless] save_step failed: {e}")
         game.stop()
 
 

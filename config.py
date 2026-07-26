@@ -55,6 +55,10 @@ ENGINE_ACTION_DURATION_MS = 30_000
 # 角色移动速度（tiles / second），见 data/characters.ts movementSpeed
 MOVEMENT_SPEED = 0.75
 
+# 生成式地图常量
+CHUNK_SIZE = 32          # 每个 chunk 的边长（tile 数）
+MAP_SEED = 42            # 世界生成种子
+
 ACTIVITIES = [
     {"description": "reading a book", "emoji": "📖", "duration_ms": 60_000},
     {"description": "daydreaming", "emoji": "🤔", "duration_ms": 60_000},

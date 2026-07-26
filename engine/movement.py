@@ -159,10 +159,9 @@ def blocked_with_positions(position: Point, other_positions, world_map: WorldMap
         raise ValueError(f"NaN position {position}")
     if position.x < 0 or position.y < 0 or position.x >= world_map.width or position.y >= world_map.height:
         return "out of bounds"
-    for layer in world_map.object_tiles:
-        ix, iy = int(math.floor(position.x)), int(math.floor(position.y))
-        if layer[ix][iy] != -1:
-            return "world blocked"
+    # 使用 chunk_manager 查询阻挡（支持生成式大地图）
+    if world_map.chunk_manager.is_blocked(position.x, position.y):
+        return "world blocked"
     for other in other_positions:
         if distance(other, position) < 0.75:  # COLLISION_THRESHOLD
             return "player"
