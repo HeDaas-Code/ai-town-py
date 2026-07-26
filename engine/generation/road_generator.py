@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from config import CHUNK_SIZE, MAP_SEED
 from engine.chunk import Chunk, Portal
 from .biome import get_biome
-from .noise import fbm_noise
+from .noise import deterministic_shuffle, fbm_noise
 from .tiles import (
     ALL_ROAD_TILES,
     RIVER_BANK_TILES,
@@ -213,6 +213,24 @@ def _generate_extra_portals(
             ))
             coord = pos[0] if edge in ("N", "S") else pos[1]
             occupied[edge].add(int(coord))
+
+    # 保底：如果一个 portal 都没有，强制在一条空闲边上开一个，
+    # 避免出现完全孤立、没有道路的 chunk。
+    if not forced_portals and not extra:
+        for edge in deterministic_shuffle(list(EDGES), seed + chunk.cx * 73 + chunk.cy * 37):
+            if occupied[edge]:
+                continue
+            pos = _find_free_portal_pos(edge, size, occupied, seed + chunk.cx * 31 + chunk.cy * 57)
+            if pos is not None:
+                dx, dy = EDGE_OFFSETS[edge]
+                connected = (chunk.cx + dx, chunk.cy + dy)
+                extra.append(Portal(
+                    edge=edge,
+                    local_x=pos[0],
+                    local_y=pos[1],
+                    connected_chunk=connected,
+                ))
+                break
 
     return extra
 

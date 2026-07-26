@@ -24,6 +24,7 @@ import pygame
 
 from config import ASSETS_DIR, CONVERSATION_DISTANCE
 from dialogue import RoutedMessage
+from engine.generation.biome import get_biome
 from engine.types import unpack_component
 from engine.world_map import WorldMap
 
@@ -39,6 +40,14 @@ SPEECH_BUBBLE_TTL_MS = 4000  # 对话气泡显示时长
 
 # 朝向 -> 动画名（与 data/characters.ts 一致）
 _DIRECTIONS = ["right", "down", "left", "up"]
+
+
+def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
+    """把 ``#RRGGBB`` 转成 RGB 三元组。"""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) == 3:
+        hex_color = "".join(c * 2 for c in hex_color)
+    return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
 
 
 def _facing_to_direction(dx: float, dy: float) -> str:
@@ -622,9 +631,48 @@ class Renderer:
 
     # ---- 调试层 ----
     def _draw_debug_overlay(self, game) -> None:
-        """调试层（最高层）：碰撞网格、寻路路径、对话范围、玩家碰撞箱、鼠标指针、agent 目标。"""
+        """调试层（最高层）：biome 区块着色、碰撞网格、寻路路径、对话范围、玩家碰撞箱、鼠标指针、agent 目标。"""
         if self.screen is None:
             return
+
+        cm = self.world_map.chunk_manager
+        cs_px = cm.chunk_size * self.tile_dim
+
+        # 0. 按 biome 为 chunk 着色
+        chunk_overlay = pygame.Surface((cs_px, cs_px), pygame.SRCALPHA)
+        chunks_snapshot = list(cm.chunks.items())
+        for (cx, cy), chunk in chunks_snapshot:
+            biome = get_biome(chunk.biome)
+            r, g, b = _hex_to_rgb(biome.color)
+            chunk_overlay.fill((r, g, b, 90))
+            wx = cx * cs_px
+            wy = cy * cs_px
+            sx, sy = self.camera.world_to_screen(wx, wy)
+            if -cs_px < sx < self.camera.width and -cs_px < sy < self.camera.height:
+                self.screen.blit(chunk_overlay, (int(sx), int(sy)))
+                # chunk 坐标标签
+                if self._small_font is not None:
+                    label = f"({cx},{cy}) {chunk.biome}"
+                    text = self._small_font.render(label, True, (255, 255, 255))
+                    shadow = self._small_font.render(label, True, (0, 0, 0))
+                    self.screen.blit(shadow, (int(sx) + 2, int(sy) + 2))
+                    self.screen.blit(text, (int(sx) + 1, int(sy) + 1))
+
+        # 0.5 biome 图例
+        if self._small_font is not None:
+            legend_x = self.camera.width - 110
+            legend_y = 10
+            box_h = 18
+            for i, name in enumerate(["residential", "commercial", "industrial", "park"]):
+                biome = get_biome(name)
+                r, g, b = _hex_to_rgb(biome.color)
+                ly = legend_y + i * (box_h + 4)
+                pygame.draw.rect(self.screen, (r, g, b), (legend_x, ly, 14, 14))
+                pygame.draw.rect(self.screen, (255, 255, 255), (legend_x, ly, 14, 14), 1)
+                text = self._small_font.render(name, True, (255, 255, 255))
+                shadow = self._small_font.render(name, True, (0, 0, 0))
+                self.screen.blit(shadow, (legend_x + 18, ly + 1))
+                self.screen.blit(text, (legend_x + 17, ly))
 
         # 1. 碰撞网格：object_tiles 中不可通过的格子（按 chunk 遍历）
         grid_color = (255, 0, 0, 60)
@@ -632,7 +680,6 @@ class Renderer:
         cell_surf = pygame.Surface((self.tile_dim, self.tile_dim), pygame.SRCALPHA)
         cell_surf.fill(grid_color)
 
-        cm = self.world_map.chunk_manager
         # 复制一份避免后台引擎线程加载/卸载 chunk 时字典改变
         chunks_snapshot = list(cm.chunks.items())
         for (cx, cy), chunk in chunks_snapshot:

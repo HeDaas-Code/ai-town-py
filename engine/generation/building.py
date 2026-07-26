@@ -9,7 +9,17 @@ from typing import List, Optional, Set, Tuple
 from config import MAP_SEED
 from .biome import get_biome
 from .noise import deterministic_choice, fbm_noise
-from .tiles import grass_tile, roof_tile, tree_tile, wall_tile
+from .tiles import (
+    ALL_ROAD_TILES,
+    MOUNTAIN_EDGE_TILES,
+    MOUNTAIN_TILES,
+    RIVER_BANK_TILES,
+    RIVER_WATER_TILES,
+    grass_tile,
+    roof_tile,
+    tree_tile,
+    wall_tile,
+)
 
 
 # 建筑尺寸限制（tile）
@@ -83,8 +93,8 @@ def _place_buildings(
     buildings: List[Tuple[int, int, int, int]] = []
 
     # 根据 biome.building_density 决定尝试次数
-    attempts = int(size * size * biome.building_density * 0.025)
-    attempts = max(1, min(attempts, 12))
+    attempts = int(size * size * biome.building_density * 0.035)
+    attempts = max(1, min(attempts, 20))
 
     for i in range(attempts):
         # 确定性但随位置变化的尺寸
@@ -208,20 +218,31 @@ def _place_trees(chunk, buildable: List[List[bool]], biome, seed: int) -> None:
 
 
 def _fill_grass(chunk, seed: int) -> None:
-    """把非道路、非建筑的背景 tile 填充为草地变体。
+    """把非道路、非建筑、非自然地貌的背景 tile 填充为草地变体。
 
-    主要处理生成过程中可能残留的 -1/0，道路和建筑屋顶保持原样。
+    主要处理生成过程中可能残留的 -1/0，道路、屋顶、山脉、河流保持原样，
+    避免建筑生成步骤把自然地貌「擦除」。
     """
     size = chunk.size
-    road_ids = _road_tile_ids()
-    roof_ids = _roof_tile_ids()
+    protected = _protected_bg_tile_ids()
     for x in range(size):
         for y in range(size):
             bg = chunk.bg_tiles[0][x][y]
-            if bg in road_ids or bg in roof_ids:
+            if bg in protected:
                 continue
             if bg in (0, -1):
                 chunk.bg_tiles[0][x][y] = grass_tile(x, y, seed)
+
+
+def _protected_bg_tile_ids() -> Set[int]:
+    """建筑生成时不应覆盖的背景 tile 集合（道路、屋顶、山脉、河流）。"""
+    return set(
+        ALL_ROAD_TILES
+        + RIVER_WATER_TILES
+        + RIVER_BANK_TILES
+        + MOUNTAIN_TILES
+        + MOUNTAIN_EDGE_TILES
+    )
 
 
 def _roof_tile_ids() -> Set[int]:

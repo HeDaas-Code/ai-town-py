@@ -25,7 +25,7 @@ BIOMES: Dict[str, Biome] = {
     "residential": Biome(
         name="residential",
         color="#A8D5BA",
-        road_density=0.25,
+        road_density=0.55,
         building_density=0.08,
         tree_density=0.05,
         description="住宅区，有房屋、花园和小路",
@@ -33,7 +33,7 @@ BIOMES: Dict[str, Biome] = {
     "commercial": Biome(
         name="commercial",
         color="#F7DC6F",
-        road_density=0.35,
+        road_density=0.65,
         building_density=0.12,
         tree_density=0.03,
         description="商业区，有商店、广场和密集街道",
@@ -41,7 +41,7 @@ BIOMES: Dict[str, Biome] = {
     "industrial": Biome(
         name="industrial",
         color="#BDC3C7",
-        road_density=0.22,
+        road_density=0.45,
         building_density=0.1,
         tree_density=0.02,
         description="工业区，有仓库和工厂",
@@ -49,7 +49,7 @@ BIOMES: Dict[str, Biome] = {
     "park": Biome(
         name="park",
         color="#82E0AA",
-        road_density=0.12,
+        road_density=0.25,
         building_density=0.01,
         tree_density=0.12,
         description="公园区，树木和草地为主",

@@ -309,24 +309,37 @@ class ChunkManager:
 
         local_seed = self.seed + cx * 1009 + cy * 997
 
+        # 0. 主干道网格：每 4 个 chunk 强制贯通一条主路，确保全局连通
+        main_roads: List[str] = []
+        if cx % 4 == 0:
+            main_roads.extend(["N", "S"])
+        if cy % 4 == 0:
+            main_roads.extend(["E", "W"])
+        if forced_edges:
+            for e in forced_edges:
+                if e not in main_roads:
+                    main_roads.append(e)
+
         # 1. 填充规范化草地背景
         fill_grass(chunk, local_seed)
 
-        # 2. 生成山脉/高地地貌
-        generate_mountains(chunk, local_seed)
-
-        # 3. 生成河流/水体
-        generate_river(chunk, local_seed)
-
-        # 4. 收集已加载的邻居（用于道路 portal 对齐）
+        # 2. 收集已加载的邻居（用于道路 portal 对齐）
         neighbors: Dict[Tuple[int, int], Chunk] = {}
         for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             n = self.get_chunk(cx + dx, cy + dy)
             if n is not None:
                 neighbors[(cx + dx, cy + dy)] = n
 
-        # 5. 生成道路网络（forced_edges 保证长距离链的连通性）
-        generate_roads_for_chunk(chunk, neighbors, self.seed, forced_edges=forced_edges)
+        # 3. 生成道路网络（在河流/山脉之前，避免被自然地貌吞掉）
+        generate_roads_for_chunk(
+            chunk, neighbors, self.seed, forced_edges=main_roads
+        )
+
+        # 4. 生成山脉/高地地貌（会自动避让道路）
+        generate_mountains(chunk, local_seed)
+
+        # 5. 生成河流/水体（会自动避让道路与山脉）
+        generate_river(chunk, local_seed)
 
         # 6. 生成建筑与装饰
         generate_buildings_and_decorations(chunk, self.seed)

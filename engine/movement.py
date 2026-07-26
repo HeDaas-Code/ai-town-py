@@ -175,83 +175,143 @@ def _find_grid_route(
     start_facing: Optional[Vector] = None,
     start_t: Optional[float] = None,
 ):
-    """局部网格 A*。支持指定起点、朝向与时间，用于分段寻路拼接。"""
-    # 使用字典以支持负坐标（无限世界）
-    min_distances: Dict[Tuple[int, int], PathCandidate] = {}
+    """局部网格 A*。支持指定起点、朝向与时间，用于分段寻路拼接。
 
-    def explore(current: PathCandidate) -> List[PathCandidate]:
-        x, y = current.position.x, current.position.y
-        neighbors: List[Tuple[Point, Vector]] = []
+    修正：
+    - 非整点起点不再强制先水平/垂直对齐到网格线，而是直接走到最近的
+      整数网格点，避免在空旷区域出现不必要的折线。
+    - A* 只在整数网格点上扩展，启发函数使用曼哈顿距离（与四方向移动匹配）。
+    """
 
-        # 非整点：先尝试水平/垂直对齐到网格点。
-        if x != math.floor(x):
-            neighbors.append((Point(math.floor(x), y), Vector(-1, 0)))
-            neighbors.append((Point(math.floor(x) + 1, y), Vector(1, 0)))
-        if y != math.floor(y):
-            neighbors.append((Point(x, math.floor(y)), Vector(0, -1)))
-            neighbors.append((Point(x, math.floor(y) + 1), Vector(0, 1)))
-        # 整点：扩展四邻域。
-        if x == math.floor(x) and y == math.floor(y):
-            neighbors.append((Point(x + 1, y), Vector(1, 0)))
-            neighbors.append((Point(x - 1, y), Vector(-1, 0)))
-            neighbors.append((Point(x, y + 1), Vector(0, 1)))
-            neighbors.append((Point(x, y - 1), Vector(0, -1)))
+    def _nearest_passable_grid(pos: Point) -> Optional[Point]:
+        """找到离 pos 最近且可通行的整数网格点。"""
+        x, y = pos.x, pos.y
+        if math.floor(x) == x and math.floor(y) == y:
+            p = Point(int(x), int(y))
+            return p if blocked(game, now, p, player.id) is None else None
 
-        nxt: List[PathCandidate] = []
-        for pos, facing in neighbors:
-            seg_len = distance(current.position, pos)
-            length = current.length + seg_len
-            if blocked(game, now, pos, player.id):
-                continue
-            remaining = manhattan_distance(pos, destination)
-            candidate = PathCandidate(
-                position=pos,
-                facing=facing,
-                t=current.t + (seg_len / MOVEMENT_SPEED) * 1000.0,
-                length=length,
-                cost=length + remaining,
-                prev=current,
-            )
-            # 维护每个网格点的最优 cost（用字典支持负坐标）。
-            ix, iy = int(pos.x), int(pos.y)
-            existing = min_distances.get((ix, iy))
-            if existing is not None and existing.cost <= candidate.cost:
-                continue
-            min_distances[(ix, iy)] = candidate
-            nxt.append(candidate)
-        return nxt
+        candidates = []
+        for ix in (math.floor(x), math.ceil(x)):
+            for iy in (math.floor(y), math.ceil(y)):
+                candidates.append((ix, iy, math.hypot(ix - x, iy - y)))
+        candidates.sort(key=lambda item: item[2])
+        for ix, iy, _ in candidates:
+            p = Point(int(ix), int(iy))
+            if blocked(game, now, p, player.id) is None:
+                return p
+        return None
 
-    current: Optional[PathCandidate] = PathCandidate(
-        position=start_pos,
-        facing=start_facing if start_facing is not None else player.facing,
-        t=start_t if start_t is not None else now,
-        length=0.0,
-        cost=manhattan_distance(start_pos, destination),
-        prev=None,
+    def _grid_facing(from_pos: Point, to_pos: Point) -> Vector:
+        dx = to_pos.x - from_pos.x
+        dy = to_pos.y - from_pos.y
+        if abs(dx) > abs(dy):
+            return Vector(1 if dx > 0 else -1, 0)
+        if abs(dy) > 0:
+            return Vector(0, 1 if dy > 0 else -1)
+        return Vector(1, 0)
+
+    initial_facing = start_facing if start_facing is not None else player.facing
+    initial_t = start_t if start_t is not None else now
+
+    # 对齐到整数网格点作为 A* 的实际起点
+    grid_start = _nearest_passable_grid(start_pos)
+    if grid_start is None:
+        return None
+
+    # 起点就在终点 -> 直接返回
+    if points_equal(grid_start, destination):
+        dense: List[PathComponent] = [
+            PathComponent(position=start_pos, facing=initial_facing, t=initial_t),
+            PathComponent(position=destination, facing=initial_facing, t=initial_t),
+        ]
+        return {"path": compress_path(dense), "new_destination": None}
+
+    # A* 状态：g_score / f_score / came_from
+    start_key = (int(grid_start.x), int(grid_start.y))
+    g_score: Dict[Tuple[int, int], float] = {start_key: 0.0}
+    f_score: Dict[Tuple[int, int], float] = {
+        start_key: manhattan_distance(grid_start, destination),
+    }
+    came_from: Dict[Tuple[int, int], Tuple[int, int]] = {}
+
+    # 把起点封装成 PathCandidate，保留从原始 start_pos 到 grid_start 的前一段
+    initial_seg_len = distance(start_pos, grid_start)
+    initial_t_end = initial_t + (initial_seg_len / MOVEMENT_SPEED) * 1000.0
+    start_candidate = PathCandidate(
+        position=grid_start,
+        facing=_grid_facing(start_pos, grid_start),
+        t=initial_t_end,
+        length=initial_seg_len,
+        cost=initial_seg_len + manhattan_distance(grid_start, destination),
+        prev=PathCandidate(
+            position=start_pos,
+            facing=initial_facing,
+            t=initial_t,
+            length=0.0,
+            cost=manhattan_distance(start_pos, destination),
+            prev=None,
+        ),
     )
-    best = current
-    heap = MinHeap(lambda a, b: a.cost > b.cost)
 
-    while current is not None:
+    heap = MinHeap(lambda a, b: a.cost > b.cost)
+    heap.push(start_candidate)
+    best = start_candidate
+
+    while heap:
+        current: Optional[PathCandidate] = heap.pop()
+        if current is None:
+            break
+
         if points_equal(current.position, destination):
             break
+
         if manhattan_distance(current.position, destination) < manhattan_distance(
             best.position, destination
         ):
             best = current
-        for cand in explore(current):
-            heap.push(cand)
-        current = heap.pop() if heap else None
+
+        cx, cy = int(current.position.x), int(current.position.y)
+        current_key = (cx, cy)
+        current_g = g_score.get(current_key, float("inf"))
+
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = cx + dx, cy + dy
+            nxt_pos = Point(nx, ny)
+            if blocked(game, now, nxt_pos, player.id):
+                continue
+
+            seg_len = 1.0
+            tentative_g = current_g + seg_len
+            nxt_key = (nx, ny)
+            if tentative_g >= g_score.get(nxt_key, float("inf")):
+                continue
+
+            came_from[nxt_key] = current_key
+            g_score[nxt_key] = tentative_g
+            f_score[nxt_key] = tentative_g + manhattan_distance(nxt_pos, destination)
+            facing = Vector(dx, dy)
+            candidate = PathCandidate(
+                position=nxt_pos,
+                facing=facing,
+                t=current.t + (seg_len / MOVEMENT_SPEED) * 1000.0,
+                length=current.length + seg_len,
+                cost=f_score[nxt_key],
+                prev=current,
+            )
+            heap.push(candidate)
+    else:
+        current = None
 
     new_destination: Optional[Point] = None
     if current is None:
-        if best.length == 0:
+        if best.length == 0 or points_equal(best.position, start_pos):
             return None
         current = best
         new_destination = current.position
 
-    dense: List[PathComponent] = []
-    node = current
+    # 回溯路径
+    dense = []
+    node: Optional[PathCandidate] = current
     while node is not None:
         dense.append(PathComponent(position=node.position, facing=node.facing, t=node.t))
         node = node.prev
