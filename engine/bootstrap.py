@@ -43,8 +43,7 @@ def build_game(
         world_map.tile_set_dim_x = meta.tile_set_dim_x
         world_map.tile_set_dim_y = meta.tile_set_dim_y
         world_map.tile_dim = meta.tile_dim
-        world_map.map_width = meta.map_width
-        world_map.map_height = meta.map_height
+        # chunk-based 无限世界不使用固定边界，保留当前动态值
         world_map.chunk_manager.chunk_size = meta.chunk_manager.chunk_size
         world_map.chunk_manager.seed = meta.chunk_manager.seed
     for c in saved_chunks:

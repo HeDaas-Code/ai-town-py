@@ -72,8 +72,10 @@ class WorldMap:
             tile_set_dim_y=data["tilesetpxh"],
             tile_dim=data["tiledim"],
             chunk_manager=cm,
-            map_width=data.get("mapwidth", 0),
-            map_height=data.get("mapheight", 0),
+            # chunk-based 无限世界不再使用固定地图边界，
+            # width/height 通过 chunk_manager 动态计算。
+            map_width=0,
+            map_height=0,
             animated_sprites=[AnimatedSprite(**s) for s in data.get("animatedsprites", [])],
         )
 

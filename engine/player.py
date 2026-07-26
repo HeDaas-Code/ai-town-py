@@ -150,7 +150,7 @@ class Player:
                 raise RuntimeError(f"Only {MAX_HUMAN_PLAYERS} human players allowed at once.")
 
         position = None
-        for _ in range(10):
+        for _ in range(100):
             cx = math.floor(random.random() * game.world_map.width)
             cy = math.floor(random.random() * game.world_map.height)
             if blocked(game, now, Point(cx, cy)) is None:
