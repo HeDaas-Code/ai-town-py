@@ -51,7 +51,9 @@ class ChunkManager:
     def get_chunk(self, cx: int, cy: int) -> Optional[Chunk]:
         return self.chunks.get((cx, cy))
 
-    def ensure_chunk(self, cx: int, cy: int) -> Chunk:
+    def ensure_chunk(
+        self, cx: int, cy: int, forced_edges: Optional[List[str]] = None
+    ) -> Chunk:
         """获取 chunk，不存在则先从数据库加载，否则程序化生成。"""
         key = (cx, cy)
         if key not in self.chunks:
@@ -59,7 +61,7 @@ class ChunkManager:
             if loaded is not None:
                 self.chunks[key] = loaded
             else:
-                self.chunks[key] = self._generate_chunk(cx, cy)
+                self.chunks[key] = self._generate_chunk(cx, cy, forced_edges=forced_edges)
         return self.chunks[key]
 
     def _load_chunk_from_db(self, cx: int, cy: int) -> Optional[Chunk]:
@@ -283,7 +285,9 @@ class ChunkManager:
         return sprites
 
     # ---- 生成 ----
-    def _generate_chunk(self, cx: int, cy: int) -> Chunk:
+    def _generate_chunk(
+        self, cx: int, cy: int, forced_edges: Optional[List[str]] = None
+    ) -> Chunk:
         """程序化生成一个新 chunk：biome -> 道路 -> 建筑/装饰。"""
         from .generation import (
             biome_at,
@@ -315,8 +319,8 @@ class ChunkManager:
             if n is not None:
                 neighbors[(cx + dx, cy + dy)] = n
 
-        # 3. 生成道路网络
-        generate_roads_for_chunk(chunk, neighbors, self.seed)
+        # 3. 生成道路网络（forced_edges 保证长距离链的连通性）
+        generate_roads_for_chunk(chunk, neighbors, self.seed, forced_edges=forced_edges)
 
         # 4. 生成建筑与装饰
         generate_buildings_and_decorations(chunk, self.seed)
@@ -424,6 +428,8 @@ class ChunkManager:
 
         road_set = set(ROAD_TILES)
         assigned: Dict[Tuple[int, int, str], Tuple[float, float]] = {}
+        # 记录每个 portal 的连接信息：connected_chunk 和 connected_portal_idx
+        connections: Dict[Tuple[int, int, str], Tuple[Tuple[int, int], int]] = {}
 
         def coords_for(chunk: Chunk, edge: str) -> List[Tuple[int, int]]:
             size = chunk.size
@@ -487,17 +493,40 @@ class ChunkManager:
                         pos = pick_portal_pos(chunk, edge)
                         assigned[nkey] = local_for_edge(pos, opp, chunk.size)
                     assigned[key] = pos
+                    # 互相记录连接关系；portal 索引在创建时按顺序确定
+                    connections[key] = ((nx, ny), 0)
+                    connections[nkey] = ((cx, cy), 0)
                 else:
-                    # 外部边界：独立选择
-                    assigned[key] = pick_portal_pos(chunk, edge)
+                    # 外部边界：独立选择，指向外部相邻 chunk 坐标
+                    pos = pick_portal_pos(chunk, edge)
+                    assigned[key] = pos
+                    connections[key] = ((nx, ny), 0)
 
-        # 应用分配的 portal 到每个 chunk
+        # 应用分配的 portal 到每个 chunk，并填入连接信息
         for (cx, cy), chunk in cm.chunks.items():
             portals: List[Portal] = []
             for edge in ("N", "S", "E", "W"):
                 pos = assigned.get((cx, cy, edge))
-                if pos is not None:
-                    portals.append(Portal(edge=edge, local_x=pos[0], local_y=pos[1]))
+                if pos is None:
+                    continue
+                conn_chunk, conn_idx = connections.get((cx, cy, edge), ((cx, cy), 0))
+                portals.append(Portal(
+                    edge=edge,
+                    local_x=pos[0],
+                    local_y=pos[1],
+                    connected_chunk=conn_chunk,
+                    connected_portal_idx=conn_idx,
+                ))
+            # 修正 connected_portal_idx 为相邻 chunk 中对应 portal 的真实索引
+            edge_to_opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
+            for i, p in enumerate(portals):
+                opp_edge = edge_to_opposite[p.edge]
+                neighbor = cm.get_chunk(*p.connected_chunk)
+                if neighbor is not None:
+                    for j, np in enumerate(neighbor.portals):
+                        if np.edge == opp_edge:
+                            p.connected_portal_idx = j
+                            break
             chunk.portals = portals
 
     @staticmethod

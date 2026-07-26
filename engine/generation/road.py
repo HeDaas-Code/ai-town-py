@@ -29,6 +29,7 @@ def generate_roads_for_chunk(
     chunk: Chunk,
     neighbor_chunks: Dict[Tuple[int, int], Chunk],
     seed: int = MAP_SEED,
+    forced_edges: Optional[List[str]] = None,
 ) -> None:
     """为 chunk 生成道路和边界 portal。
 
@@ -40,11 +41,13 @@ def generate_roads_for_chunk(
     size = chunk.size
     biome = get_biome(chunk.biome)
 
+    forced_edges = forced_edges or []
+
     # 1. 继承相邻 chunk 的强制 portal
     forced_portals = _inherit_portals(chunk, neighbor_chunks)
 
-    # 2. 根据 biome 生成额外 portal
-    extra_portals = _generate_extra_portals(chunk, forced_portals, biome, seed)
+    # 2. 根据 biome 生成额外 portal（强制边始终开 portal）
+    extra_portals = _generate_extra_portals(chunk, forced_portals, biome, seed, forced_edges)
 
     chunk.portals = forced_portals + extra_portals
 
@@ -104,10 +107,12 @@ def _generate_extra_portals(
     forced_portals: List[Portal],
     biome,
     seed: int,
+    forced_edges: Optional[List[str]] = None,
 ) -> List[Portal]:
     """根据 biome 和噪声生成额外的边界 portal。"""
     size = chunk.size
     extra: List[Portal] = []
+    forced_edges = forced_edges or []
 
     # 已占用的边界位置（按 edge -> set of local positions）
     occupied: Dict[str, Set[int]] = {e: set() for e in EDGES}
@@ -121,13 +126,23 @@ def _generate_extra_portals(
     for edge in EDGES:
         if occupied[edge]:
             continue
-        n = (fbm_noise(chunk.cx * 0.5 + _edge_seed(edge), chunk.cy * 0.5, seed + 3) + 1.0) * 0.5
-        if n < biome.road_density:
-            pos = _find_free_portal_pos(edge, size, occupied, seed + chunk.cx * 31 + chunk.cy * 57)
-            if pos is not None:
-                extra.append(Portal(edge=edge, local_x=pos[0], local_y=pos[1]))
-                coord = pos[0] if edge in ("N", "S") else pos[1]
-                occupied[edge].add(int(coord))
+        is_forced = edge in forced_edges
+        if not is_forced:
+            n = (fbm_noise(chunk.cx * 0.5 + _edge_seed(edge), chunk.cy * 0.5, seed + 3) + 1.0) * 0.5
+            if n >= biome.road_density:
+                continue
+        pos = _find_free_portal_pos(edge, size, occupied, seed + chunk.cx * 31 + chunk.cy * 57)
+        if pos is not None:
+            dx, dy = EDGE_OFFSETS[edge]
+            connected = (chunk.cx + dx, chunk.cy + dy)
+            extra.append(Portal(
+                edge=edge,
+                local_x=pos[0],
+                local_y=pos[1],
+                connected_chunk=connected,
+            ))
+            coord = pos[0] if edge in ("N", "S") else pos[1]
+            occupied[edge].add(int(coord))
 
     return extra
 

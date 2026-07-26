@@ -216,15 +216,36 @@ def math_floor(x: float) -> int:
 
 
 def _spawn_far_direction(cm, cx: int, cy: int, distance: int, player_id: str) -> Tuple[Optional[int], Optional[int]]:
-    """沿确定性方向生成一串 chunk，返回最远端的 chunk 坐标。"""
-    directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+    """沿确定性正交方向生成一串 chunk，返回最远端的 chunk 坐标。
+
+    只用 N/S/E/W 四个正交方向，并强制在链上每个 chunk 的进出边开 portal，
+    确保生成的 chunk 链与 seed 区域连通。
+    """
+    directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
     idx = abs(hash(player_id)) % len(directions)
     dx, dy = directions[idx]
+
+    edge_for = {
+        (1, 0): "W",
+        (-1, 0): "E",
+        (0, 1): "N",
+        (0, -1): "S",
+    }
+    opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
+    incoming = edge_for[(dx, dy)]       # 指向 seed/前一个 chunk 的边
+    outgoing = opposite[incoming]       # 指向下一个 chunk 的边
+
+    prev = (cx, cy)
     tx, ty = cx, cy
-    for _ in range(distance):
+    for i in range(distance):
         tx += dx
         ty += dy
-        cm.ensure_chunk(tx, ty)
+        # 中间 chunk 强制同时开进出 portal；最后一个 chunk 只开进入 portal
+        forced = [incoming]
+        if i < distance - 1:
+            forced.append(outgoing)
+        cm.ensure_chunk(tx, ty, forced_edges=forced)
+        prev = (tx, ty)
     return tx, ty
 
 

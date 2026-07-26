@@ -17,7 +17,7 @@ from config import MOVEMENT_SPEED
 from .chunk import chunk_to_world, world_to_chunk
 from .geometry import compress_path, distance, manhattan_distance, points_equal
 from .minheap import MinHeap
-from .types import Path, PathComponent, Point, Vector
+from .types import Path, PathComponent, Point, Vector, unpack_component
 from .world_map import WorldMap
 
 
@@ -122,9 +122,11 @@ def _find_long_route(game, now: float, player, destination: Point):
         if not segment:
             current_pos = waypoint
             continue
-        full_dense.extend(segment)
+        # segment 已经被 compress_path 打包成 tuple，先解包再拼接
+        segment_components = [unpack_component(p) for p in segment]
+        full_dense.extend(segment_components)
         # 下一段起点为当前段终点
-        last = segment[-1]
+        last = segment_components[-1]
         current_pos = last.position
         current_facing = last.facing
         current_t = last.t
