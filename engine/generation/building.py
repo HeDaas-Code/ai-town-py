@@ -220,5 +220,5 @@ def _fill_grass(chunk, seed: int) -> None:
 
 def _road_tile_ids() -> Set[int]:
     """道路 tile ID 集合。"""
-    from .tiles import ROAD_TILES
-    return set(ROAD_TILES)
+    from .tiles import ALL_ROAD_TILES
+    return set(ALL_ROAD_TILES)

@@ -288,13 +288,15 @@ class ChunkManager:
     def _generate_chunk(
         self, cx: int, cy: int, forced_edges: Optional[List[str]] = None
     ) -> Chunk:
-        """程序化生成一个新 chunk：biome -> 道路 -> 建筑/装饰。"""
+        """程序化生成一个新 chunk：地貌 -> 草地 -> 河流 -> 道路 -> 建筑/装饰。"""
         from .generation import (
             biome_at,
+            fill_grass,
             generate_buildings_and_decorations,
+            generate_mountains,
+            generate_river,
             generate_roads_for_chunk,
         )
-        from .generation.tiles import grass_tile
 
         biome_name = biome_at(cx, cy, self.seed)
         chunk = Chunk(
@@ -305,24 +307,28 @@ class ChunkManager:
         chunk.bg_tiles = [[[-1] * self.chunk_size for _ in range(self.chunk_size)]]
         chunk.obj_tiles = [[[-1] * self.chunk_size for _ in range(self.chunk_size)]]
 
-        # 1. 填充草地背景
-        for lx in range(self.chunk_size):
-            for ly in range(self.chunk_size):
-                chunk.bg_tiles[0][lx][ly] = grass_tile(
-                    lx, ly, self.seed + cx * 1009 + cy * 997
-                )
+        local_seed = self.seed + cx * 1009 + cy * 997
 
-        # 2. 收集已加载的邻居（用于道路 portal 对齐）
+        # 1. 填充规范化草地背景
+        fill_grass(chunk, local_seed)
+
+        # 2. 生成山脉/高地地貌
+        generate_mountains(chunk, local_seed)
+
+        # 3. 生成河流/水体
+        generate_river(chunk, local_seed)
+
+        # 4. 收集已加载的邻居（用于道路 portal 对齐）
         neighbors: Dict[Tuple[int, int], Chunk] = {}
         for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             n = self.get_chunk(cx + dx, cy + dy)
             if n is not None:
                 neighbors[(cx + dx, cy + dy)] = n
 
-        # 3. 生成道路网络（forced_edges 保证长距离链的连通性）
+        # 5. 生成道路网络（forced_edges 保证长距离链的连通性）
         generate_roads_for_chunk(chunk, neighbors, self.seed, forced_edges=forced_edges)
 
-        # 4. 生成建筑与装饰
+        # 6. 生成建筑与装饰
         generate_buildings_and_decorations(chunk, self.seed)
 
         # 新生成的 chunk 需要持久化（即使玩家没修改），避免重复生成不同结果
@@ -424,9 +430,9 @@ class ChunkManager:
         cls, cm: "ChunkManager", num_cx: int, num_cy: int
     ) -> None:
         """为 seed chunks 的所有边界生成 portal，内部边界与相邻 chunk 对齐。"""
-        from .generation.tiles import ROAD_TILES
+        from .generation.tiles import ALL_ROAD_TILES
 
-        road_set = set(ROAD_TILES)
+        road_set = set(ALL_ROAD_TILES)
         assigned: Dict[Tuple[int, int, str], Tuple[float, float]] = {}
         # 记录每个 portal 的连接信息：connected_chunk 和 connected_portal_idx
         connections: Dict[Tuple[int, int, str], Tuple[Tuple[int, int], int]] = {}
