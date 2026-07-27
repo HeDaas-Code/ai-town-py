@@ -11,14 +11,12 @@ from engine.chunk import Chunk
 from .noise import fbm_noise
 from .tiles import (
     ALL_ROAD_TILES,
-    MOUNTAIN_EDGE_TILES,
     MOUNTAIN_TILES,
     river_tile,
-    river_tile_autotile,
 )
 
 # 河流不应覆盖的道路/山脉瓦片
-_PROTECTED_BG_TILES = set(ALL_ROAD_TILES + MOUNTAIN_TILES + MOUNTAIN_EDGE_TILES)
+_PROTECTED_BG_TILES = set(ALL_ROAD_TILES + MOUNTAIN_TILES)
 
 
 # 河流方向：从进入边到离开边
@@ -116,8 +114,8 @@ def _river_path(
 def _paint_river(chunk: Chunk, river_cells: Set[Tuple[int, int]], seed: int) -> None:
     """绘制河流瓦片并标记为水体阻挡。
 
-    使用自适应贴图：根据 4 邻域水体分布选择对应方向的水体/水边瓦片。
-    河流主体不会覆盖道路、山脉或已有建筑，避免"水上公路"等异常渲染。
+    河流主体使用验证过的纯水瓦片，周围一圈使用 bank 瓦片过渡。
+    河流不会覆盖道路、山脉或已有建筑，避免"水上公路"等异常渲染。
     """
     size = chunk.size
     layer = chunk.bg_tiles[0]
@@ -129,14 +127,7 @@ def _paint_river(chunk: Chunk, river_cells: Set[Tuple[int, int]], seed: int) -> 
             continue
         if layer[lx][ly] in _PROTECTED_BG_TILES:
             continue
-        # 检查 4 邻域是否也是水
-        has_n = (lx, ly - 1) in river_cells
-        has_s = (lx, ly + 1) in river_cells
-        has_e = (lx + 1, ly) in river_cells
-        has_w = (lx - 1, ly) in river_cells
-        layer[lx][ly] = river_tile_autotile(
-            lx, ly, seed, has_n, has_s, has_e, has_w
-        )
+        layer[lx][ly] = river_tile(lx, ly, seed, is_bank=False)
         obj_layer[lx][ly] = 1  # 水体不可通行
 
     # 水边过渡：河流周围一圈使用 bank tile（不阻挡），但同样避让道路/建筑

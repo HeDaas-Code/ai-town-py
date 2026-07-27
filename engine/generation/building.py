@@ -19,7 +19,6 @@ from .tiles import (
     roof_tile,
     tree_tile,
     wall_tile,
-    wall_tile_for_position,
 )
 
 
@@ -166,34 +165,22 @@ def _can_place_building(
 
 
 def _draw_building(chunk, x: int, y: int, w: int, h: int, seed: int) -> None:
-    """在 chunk 中绘制一个矩形建筑。
+    """在 chunk 中绘制一个矩形建筑。"""
+    roof = roof_tile(seed)
+    wall = wall_tile(seed + 1)
 
-    使用自适应墙瓦片：角落、水平墙、垂直墙使用不同瓦片。
-    """
-    # 屋顶（背景层）：每个 tile 随机选择屋顶变体
+    # 屋顶（背景层）
     for dx in range(w):
         for dy in range(h):
-            chunk.bg_tiles[0][x + dx][y + dy] = roof_tile(seed + dx * 3 + dy * 5)
+            chunk.bg_tiles[0][x + dx][y + dy] = roof
 
-    # 外墙（碰撞层）：按位置自适应选择墙瓦片
+    # 外墙（碰撞层）
     for dx in range(w):
-        # 上墙
-        chunk.obj_tiles[0][x + dx][y] = wall_tile_for_position(
-            x, y, w, h, dx, 0, seed + 1
-        )
-        # 下墙
-        chunk.obj_tiles[0][x + dx][y + h - 1] = wall_tile_for_position(
-            x, y, w, h, dx, h - 1, seed + 1
-        )
+        chunk.obj_tiles[0][x + dx][y] = wall
+        chunk.obj_tiles[0][x + dx][y + h - 1] = wall
     for dy in range(h):
-        # 左墙
-        chunk.obj_tiles[0][x][y + dy] = wall_tile_for_position(
-            x, y, w, h, 0, dy, seed + 1
-        )
-        # 右墙
-        chunk.obj_tiles[0][x + w - 1][y + dy] = wall_tile_for_position(
-            x, y, w, h, w - 1, dy, seed + 1
-        )
+        chunk.obj_tiles[0][x][y + dy] = wall
+        chunk.obj_tiles[0][x + w - 1][y + dy] = wall
 
     # 门：随机一面墙开缺口
     door_edge = deterministic_choice(["N", "S", "E", "W"], seed + 2)
