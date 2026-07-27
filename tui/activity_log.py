@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 
@@ -62,12 +62,15 @@ class ActivityLog:
         """
         world = game.world
         # Track which conversations each player is in this tick.
+        # Snapshot with list() because the engine thread mutates these dicts
+        # during tick(); iterating a live dict raises RuntimeError if it
+        # changes size mid-iteration.
         current_player_conv: Dict[str, str] = {}
-        for conv_id, conv in world.conversations.items():
-            for pid in conv.participants.keys():
+        for conv_id, conv in list(world.conversations.items()):
+            for pid in list(conv.participants.keys()):
                 current_player_conv[pid] = conv_id
 
-        for player_id, player in world.players.items():
+        for player_id, player in list(world.players.items()):
             dest: Optional[str] = None
             if player.pathfinding is not None:
                 d = player.pathfinding.get("destination")

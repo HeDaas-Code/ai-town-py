@@ -4,7 +4,6 @@ from __future__ import annotations
 from textual.widgets import RichLog
 
 from tui.snapshot import AgentSnapshot
-from tui.activity_log import LogEntry
 
 
 class AgentDetail(RichLog):
