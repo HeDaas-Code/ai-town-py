@@ -8,6 +8,8 @@ ActivityLog write safely (the log itself is also lock-guarded).
 """
 from __future__ import annotations
 
+import time
+
 from typing import Optional
 
 from textual.app import App, ComposeResult
@@ -41,6 +43,7 @@ class TownApp(App):
         self.selected_player_id: Optional[str] = None
         self.locked = True
         self._should_exit = False
+        self._help_until: float = 0.0
         # ordered list of player_ids (roster)
         self._roster: list = []
 
@@ -65,7 +68,7 @@ class TownApp(App):
         self.call_from_thread(self.activity_log.on_routed_message, msg)
 
     def _refresh(self) -> None:
-        now_ms = int(__import__("time").time() * 1000)
+        now_ms = int(time.time() * 1000)
         # Diff world for activity transitions
         self.activity_log.diff_world(self.game, now_ms)
         # Rebuild roster
@@ -109,6 +112,8 @@ class TownApp(App):
         mv.update_view(grid, snap.name if snap else self.selected_player_id)
 
     def _render_detail(self) -> None:
+        if time.time() < self._help_until:
+            return  # keep :help text visible until the timeout expires
         if self.selected_player_id is None:
             return
         snap = build_snapshot(self.game, self.selected_player_id)
@@ -137,6 +142,7 @@ class TownApp(App):
         if event.input.id != "command-bar":
             return
         event.input.value = ""  # clear the input after submit
+        self._help_until = 0.0  # dismiss help on any new command
         cmd = parse_command(event.value)
         if isinstance(cmd, JumpById):
             if 1 <= cmd.index <= len(self._roster):
@@ -170,6 +176,7 @@ class TownApp(App):
         return None
 
     def _show_help(self) -> None:
+        self._help_until = time.time() + 10.0  # show help for 10 seconds
         help_text = (
             "Commands:\n"
             "  <number>        jump to agent by index\n"
