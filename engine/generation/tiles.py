@@ -35,11 +35,34 @@ ROAD_TURN_TILES = {
 RIVER_WATER_TILES = [405, 406, 407, 408, 409]
 RIVER_BANK_TILES = [450, 451, 452, 453, 495, 496, 497, 498, 499]
 
-# 山脉/悬崖瓦片：主体使用少量一致的岩石瓦片，边缘使用过渡瓦片。
-# 避免从大量不同朝向的瓦片中随机挑选，防止山体看起来「破碎」。
-MOUNTAIN_BASE_TILES = [544, 553, 560]
-MOUNTAIN_EDGE_TILES = [540, 541, 542, 543]
-MOUNTAIN_TILES = MOUNTAIN_BASE_TILES + MOUNTAIN_EDGE_TILES
+# 山脉/悬崖瓦片：通过分析 tileset 中每个瓦片的 4 角岩石覆盖，
+# 分类为 autotile 角色（内部、各方向边、各角）。各集合互斥。
+# 山体生成时根据 4 邻域山体分布选择对应角色，实现自适应过渡。
+
+# 山体内部填充瓦片（四角都有岩石）
+MOUNTAIN_INTERIOR_TILES = [553, 594, 596]
+
+# 各方向边瓦片（该方向两角有岩石，对侧没有）
+MOUNTAIN_N_EDGE_TILES = [593]                 # 上边有岩石
+MOUNTAIN_S_EDGE_TILES = [543]                 # 下边有岩石
+MOUNTAIN_W_EDGE_TILES = [548]                 # 左边有岩石
+MOUNTAIN_E_EDGE_TILES = [555, 595]            # 右边有岩石
+
+# 角落瓦片（只有一个角的岩石占主导）
+MOUNTAIN_NW_CORNER_TILES = [540, 541, 545, 552, 585, 586, 590, 597]  # 左上角
+MOUNTAIN_NE_CORNER_TILES = [542, 546, 547, 551, 554, 587, 591, 592]  # 右上角
+MOUNTAIN_SW_CORNER_TILES = [598]              # 左下角
+MOUNTAIN_SE_CORNER_TILES = [588]              # 右下角
+
+# 兼容旧代码：保留 MOUNTAIN_BASE/EDGE/TILES 作为合集
+MOUNTAIN_BASE_TILES = MOUNTAIN_INTERIOR_TILES
+MOUNTAIN_EDGE_TILES = (
+    MOUNTAIN_N_EDGE_TILES + MOUNTAIN_S_EDGE_TILES
+    + MOUNTAIN_W_EDGE_TILES + MOUNTAIN_E_EDGE_TILES
+    + MOUNTAIN_NW_CORNER_TILES + MOUNTAIN_NE_CORNER_TILES
+    + MOUNTAIN_SW_CORNER_TILES + MOUNTAIN_SE_CORNER_TILES
+)
+MOUNTAIN_TILES = list(set(MOUNTAIN_BASE_TILES + MOUNTAIN_EDGE_TILES))
 
 # 建筑外墙瓦片（object 层）：使用 objmap 中实际构成建筑物的瓦片
 WALL_TILES = [380, 381, 382, 383, 384, 385, 386, 387]
@@ -95,8 +118,63 @@ def river_tile(lx: int, ly: int, seed: int, is_bank: bool = False) -> int:
 
 def mountain_tile(lx: int, ly: int, seed: int, is_edge: bool = False) -> int:
     """山脉瓦片：高地或边缘过渡。"""
-    pool = MOUNTAIN_EDGE_TILES if is_edge else MOUNTAIN_TILES
+    pool = MOUNTAIN_EDGE_TILES if is_edge else MOUNTAIN_INTERIOR_TILES
     return deterministic_choice(pool, seed + lx * 19 + ly * 23)
+
+
+def mountain_tile_autotile(
+    lx: int,
+    ly: int,
+    seed: int,
+    neighbors_n: bool,
+    neighbors_s: bool,
+    neighbors_e: bool,
+    neighbors_w: bool,
+) -> int:
+    """根据 4 邻域山体分布自适应选择山脉瓦片。
+
+    neighbors_* 为 True 表示该方向有相邻山体。
+    选择规则：
+    - 四邻都有 -> 内部填充
+    - 某方向缺 -> 该方向的边瓦片
+    - 两相邻方向缺 -> 角落瓦片
+    """
+    n_open = sum(1 for v in (neighbors_n, neighbors_s, neighbors_e, neighbors_w) if not v)
+
+    if n_open == 0:
+        # 完全被包围 -> 内部
+        return deterministic_choice(MOUNTAIN_INTERIOR_TILES, seed + lx * 19 + ly * 23)
+
+    if n_open == 1:
+        # 只有一个方向空 -> 边瓦片
+        if not neighbors_n:
+            return deterministic_choice(MOUNTAIN_N_EDGE_TILES, seed + lx * 19 + ly * 23)
+        if not neighbors_s:
+            return deterministic_choice(MOUNTAIN_S_EDGE_TILES, seed + lx * 19 + ly * 23)
+        if not neighbors_e:
+            return deterministic_choice(MOUNTAIN_E_EDGE_TILES, seed + lx * 19 + ly * 23)
+        if not neighbors_w:
+            return deterministic_choice(MOUNTAIN_W_EDGE_TILES, seed + lx * 19 + ly * 23)
+
+    if n_open == 2:
+        # 两个相邻方向空 -> 角落瓦片
+        if not neighbors_n and not neighbors_w:
+            return deterministic_choice(MOUNTAIN_NW_CORNER_TILES, seed + lx * 19 + ly * 23)
+        if not neighbors_n and not neighbors_e:
+            return deterministic_choice(MOUNTAIN_NE_CORNER_TILES, seed + lx * 19 + ly * 23)
+        if not neighbors_s and not neighbors_w:
+            return deterministic_choice(MOUNTAIN_SW_CORNER_TILES, seed + lx * 19 + ly * 23)
+        if not neighbors_s and not neighbors_e:
+            return deterministic_choice(MOUNTAIN_SE_CORNER_TILES, seed + lx * 19 + ly * 23)
+
+    # n_open >= 3：孤立或半岛状，用角落兜底
+    if not neighbors_n and not neighbors_w:
+        return deterministic_choice(MOUNTAIN_NW_CORNER_TILES, seed + lx * 19 + ly * 23)
+    if not neighbors_n and not neighbors_e:
+        return deterministic_choice(MOUNTAIN_NE_CORNER_TILES, seed + lx * 19 + ly * 23)
+    if not neighbors_s and not neighbors_w:
+        return deterministic_choice(MOUNTAIN_SW_CORNER_TILES, seed + lx * 19 + ly * 23)
+    return deterministic_choice(MOUNTAIN_SE_CORNER_TILES, seed + lx * 19 + ly * 23)
 
 
 def tree_tile(seed: int) -> int:

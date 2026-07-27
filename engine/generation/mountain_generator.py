@@ -6,8 +6,8 @@
 修复点：
 - 降低噪声频率、提高 octave，生成更大更平滑的山体斑块。
 - 过滤掉零散小斑块，避免「乱码」般的碎点。
-- 每个 chunk 只使用一种主体岩石瓦片 + 统一的边缘过渡瓦片，
-  避免从大量不同朝向瓦片中随机挑选导致的破碎着色。
+- 自适应贴图：根据 4 邻域山体分布选择对应方向的山体瓦片，
+  使山体边缘和角落自然过渡，避免破碎着色。
 """
 from __future__ import annotations
 
@@ -15,13 +15,12 @@ from typing import List, Set, Tuple
 
 from engine.chunk import Chunk
 from .biome import get_biome
-from .noise import deterministic_choice, fbm_noise
+from .noise import fbm_noise
 from .tiles import (
     ALL_ROAD_TILES,
-    MOUNTAIN_BASE_TILES,
-    MOUNTAIN_EDGE_TILES,
     RIVER_BANK_TILES,
     RIVER_WATER_TILES,
+    mountain_tile_autotile,
 )
 
 # 山脉不应覆盖的道路/水体瓦片（生成顺序：道路 -> 山脉 -> 河流）
@@ -81,9 +80,8 @@ def generate_mountains(chunk: Chunk, seed: int) -> Set[Tuple[int, int]]:
     if not mountain_cells:
         return set()
 
-    # 每个 chunk 选一种主体岩石瓦片，保持山体内部着色一致
-    base_tile = deterministic_choice(MOUNTAIN_BASE_TILES, local_seed)
-    _paint_mountains(chunk, mountain_cells, local_seed, base_tile)
+    # 自适应贴图：根据 8 邻域山体分布选择边/角/内部瓦片
+    _paint_mountains(chunk, mountain_cells, local_seed)
     return mountain_cells
 
 
@@ -118,11 +116,11 @@ def _paint_mountains(
     chunk: Chunk,
     mountain_cells: Set[Tuple[int, int]],
     seed: int,
-    base_tile: int,
 ) -> None:
     """在山脉区域绘制瓦片并标记为阻挡。
 
-    若某格已有道路、水体或建筑，则跳过，保持已有地貌完整。
+    使用自适应贴图：根据 4 邻域山体分布选择对应方向的山体瓦片，
+    使山体边缘和角落自然过渡。若某格已有道路、水体或建筑，则跳过。
     """
     size = chunk.size
     layer = chunk.bg_tiles[0]
@@ -135,18 +133,15 @@ def _paint_mountains(
         if layer[lx][ly] in _PROTECTED_BG_TILES:
             continue
 
-        # 边缘判断：只要 4-邻域有一个非山体格，就使用边缘过渡瓦片
-        is_edge = any(
-            (lx + dx, ly + dy) not in mountain_cells
-            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))
-        )
-        if is_edge:
-            tile = deterministic_choice(
-                MOUNTAIN_EDGE_TILES, seed + lx * 19 + ly * 23
-            )
-        else:
-            tile = base_tile
+        # 检查 4 邻域是否也是山体
+        has_n = (lx, ly - 1) in mountain_cells
+        has_s = (lx, ly + 1) in mountain_cells
+        has_e = (lx + 1, ly) in mountain_cells
+        has_w = (lx - 1, ly) in mountain_cells
 
+        tile = mountain_tile_autotile(
+            lx, ly, seed, has_n, has_s, has_e, has_w
+        )
         layer[lx][ly] = tile
         # 整个山脉区域都不可通行
         obj_layer[lx][ly] = 1
