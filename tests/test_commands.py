@@ -53,3 +53,9 @@ def test_unknown_command_returns_unknown():
 def test_jump_without_name_returns_unknown():
     cmd = parse_command(":jump")
     assert isinstance(cmd, Unknown)
+
+
+def test_lone_colon_returns_unknown():
+    cmd = parse_command(":")
+    assert isinstance(cmd, Unknown)
+    assert cmd.text == ":"

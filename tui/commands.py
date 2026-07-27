@@ -65,6 +65,8 @@ def parse_command(text: str):
     # Colon command
     if text.startswith(":"):
         parts = text[1:].split(maxsplit=1)
+        if not parts:
+            return Unknown(text)
         keyword = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
         if keyword == "jump":
